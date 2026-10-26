@@ -1,485 +1,615 @@
 /* =====================================================================
    BIBLIOTECA DE PARECERES SOCIOAMBIENTAIS
-   Fonte: TEXTOS_PADRAO_REVISADO.docx (textos copiados sem alteração).
+   Fontes: PARECERES_SOCIOAMBIENTAIS_TEXTOS_PADRAO.docx (revisão de
+   26/10/2026) e “Trechos fundamentados para utilizar” (enviados pela
+   área). Os textos foram copiados sem correção; os pontos duvidosos
+   estão em PENDENCIAS_WORD e aparecem no Guia da ferramenta.
 
    COMO MANTER ESTE ARQUIVO
+   - Os textos ficam em TX (um parágrafo por chave). MODELOS e TRECHOS
+     apenas apontam para eles: corrigir em TX corrige em todo lugar.
    - Para ADICIONAR um modelo: copie um bloco { id: ..., } de MODELOS,
-     troque o "id" (precisa ser único e não deve mudar depois) e edite.
-   - Para CATEGORIZAR: use em "categoria" um id de CATEGORIAS.
-     "subcategoria" é opcional (agrupa dentro da categoria).
-   - Para criar uma categoria nova: acrescente em CATEGORIAS.
-   - Cada item de "paragrafos" é um parágrafo do parecer. Pode ser:
-       "texto"                          parágrafo normal
-       { opcoes: ["Opção 1…", "…"] }    alternativas: o analista mantém a(s) que se aplica(m)
-       { rotulo: "1 – Identificação" }  rótulo interno (aparece no editor, não sai no parecer)
+     troque o "id" (único; não deve mudar depois) e edite.
+   - "categoria": um id de CATEGORIAS. "status": um id de STATUS (define
+     a cor do cartão e a linha STATUS do cabeçalho do parecer).
+   - "padroes" (opcional): valores iniciais dos campos, ex.: { tipoPessoa: 'PJ' }.
+   - Cada item de "paragrafos" pode ser:
+       "texto"                                parágrafo normal
+       { rotulo: "3 – Fundamentação", bloco: 3 }
+                                              rótulo interno (não sai no parecer)
+       { grupo: "Operação", instrucao: "…", opcoes: [{ rotulo: "Opção 1 – …", texto: "…" }] }
+                                              opções: o analista escolhe no painel
+                                              “Dados do caso”; as outras não saem
+                                              (multipla: true permite marcar várias)
+       { se: "carStatus=Suspenso", rotulo: "…", texto: "…" }
+                                              parágrafo que só sai quando o campo
+                                              tem aquele valor
+       { opcional: "rótulo", texto: "…", incluido: false }
+                                              parágrafo opcional (caixa “incluir”)
    - Marcações dentro do texto:
-       [CAMPO]            campo a preencher (destacado em amarelo no editor)
-       [opção a / opção b] alternativas (o analista apaga a que não se aplica)
-       **texto**          negrito
-       ==texto==          trecho condicional (amarelo sem colchetes no Word) – exige confirmação
-       !!texto!!          trecho que exige validação (azul no Word)
+       {{campo}}            campo parametrizado (ver CAMPOS). Preenchido uma vez
+                            no painel e aplicado ao texto todo.
+       {{campo|TEXTO}}      o mesmo campo, com outro texto entre colchetes
+                            enquanto estiver vazio
+       {{escolha:a|b|c}}    alternativa local: o analista escolhe uma no painel.
+                            Pode conter campos: {{escolha:x {{campo}}|y}}
+       [TEXTO LIVRE]        trecho a redigir (amarelo; edição livre)
+       **negrito**   ==condicional (laranja)==   !!exige validação (azul)!!
    - "quandoUsar" e "obs" são orientações internas: aparecem para o
      analista, mas NUNCA entram no texto do parecer.
-   - Os analistas não alteram este arquivo pela ferramenta; a edição é
-     feita aqui, por quem mantém a biblioteca.
    ===================================================================== */
 
 /* Versão da biblioteca (aumente ao alterar os textos). */
-const BIBLIOTECA_VERSAO = '2026-10-12';
+const BIBLIOTECA_VERSAO = '2026-10-26';
 
 const CATEGORIAS = [
-  { id: 'favoravel',   nome: 'A. Parecer favorável' },
-  { id: 'excepcional', nome: 'B. Desbloqueio excepcional' },
-  { id: 'mantido',     nome: 'C. Bloqueio mantido' },
-  { id: 'base',        nome: 'Modelo-base (casos não previstos)' },
+  { id: 'aprovado',     nome: 'A. Aprovado – desbloqueio' },
+  { id: 'excepcional',  nome: 'B. Desbloqueio excepcional – somente operação já formalizada',
+    descricao: 'A restrição continua existindo: o desbloqueio vale apenas para concluir a operação já formalizada, e o bloqueio deve ser restabelecido ao final. Por isso, o cabeçalho traz a linha “Condição”.' },
+  { id: 'mantido',      nome: 'C. Bloqueio mantido' },
+  { id: 'procedimento', nome: 'D. Procedimentos operacionais e cadastrais' },
+  { id: 'base',         nome: 'Modelo-base (casos não previstos)' },
 ];
+
+/* Status do parecer: texto da linha STATUS do cabeçalho e cor do selo. */
+const STATUS = [
+  { id: 'aprovado',        nome: 'APROVADO',                   cor: 'ok' },
+  { id: 'excepcional',     nome: 'APROVADO (EXCEPCIONAL)',     cor: 'warn',
+    condicao: 'desbloqueio válido somente para concluir a operação já formalizada; o bloqueio será restabelecido ao final.' },
+  { id: 'mantido',         nome: 'BLOQUEIO MANTIDO',           cor: 'danger' },
+  { id: 'desbloqueio',     nome: 'DESBLOQUEIO REALIZADO',      cor: 'info' },
+  { id: 'reclassificacao', nome: 'RECLASSIFICAÇÃO CADASTRAL',  cor: 'info' },
+];
+
+/* =====================================================================
+   CAMPOS PARAMETRIZADOS
+   tipo: texto | data | numero | selecao (lista fechada) | lista (sugestões
+   com texto livre). "ph" é o texto mostrado entre colchetes enquanto o
+   campo está vazio. Em "opcoes", { valor, texto } permite gravar um valor
+   e escrever outro no parecer.
+   ===================================================================== */
+const GRUPOS_CAMPOS = ['Cliente', 'Área', 'Restrição', 'Documentos', 'Capacidade produtiva', 'Operação', 'Cadastro'];
+
+const CAMPOS = [
+  { id: 'tipoPessoa', grupo: 'Cliente', rotulo: 'Tipo de pessoa', tipo: 'selecao', ph: 'PF / PJ',
+    opcoes: [{ valor: 'PF', texto: 'Pessoa física' }, { valor: 'PJ', texto: 'Pessoa jurídica' }] },
+  { id: 'nome', grupo: 'Cliente', rotulo: 'Nome / razão social', ph: 'NOME / RAZÃO SOCIAL' },
+  { id: 'docNumero', grupo: 'Cliente', rotulo: 'Nº do CPF/CNPJ', ph: 'Nº DO CPF/CNPJ', dica: 'Usado no cabeçalho.' },
+
+  { id: 'municipio', grupo: 'Área', rotulo: 'Município/UF', ph: 'MUNICÍPIO/UF' },
+  { id: 'municipioPA', grupo: 'Área', rotulo: 'Município (Pará)', ph: 'MUNICÍPIO', dica: 'O texto completa com “/PA”.' },
+  { id: 'uf', grupo: 'Área', rotulo: 'UF (fator CONAB)', ph: 'UF' },
+  { id: 'car', grupo: 'Área', rotulo: 'Nº do CAR', ph: 'Nº DO CAR' },
+  { id: 'municipioEmbargo', grupo: 'Área', rotulo: 'Município/UF do embargo', ph: 'MUNICÍPIO/UF DO EMBARGO' },
+  { id: 'carEmbargo', grupo: 'Área', rotulo: 'Nº do CAR do embargo', ph: 'Nº DO CAR DO EMBARGO' },
+  { id: 'carAssentamento', grupo: 'Área', rotulo: 'Nº do CAR do assentamento', ph: 'Nº DO CAR DO ASSENTAMENTO' },
+  { id: 'nomeFazenda', grupo: 'Área', rotulo: 'Nome da fazenda', ph: 'NOME DA FAZENDA' },
+  { id: 'carStatus', grupo: 'Área', rotulo: 'Status do CAR', tipo: 'selecao', ph: '“Suspenso” / “Cancelado”',
+    opcoes: [{ valor: 'Suspenso', texto: '“Suspenso”' }, { valor: 'Cancelado', texto: '“Cancelado”' }] },
+
+  { id: 'orgao', grupo: 'Restrição', rotulo: 'Órgão do embargo', tipo: 'lista', ph: 'Ibama / ICMBio / Sema-MT / Semad-GO / LDI-PA',
+    opcoes: ['Ibama', 'ICMBio', 'Sema-MT', 'Semad-GO', 'LDI-PA'] },
+  { id: 'esferaEmbargo', grupo: 'Restrição', rotulo: 'Esfera do embargo', tipo: 'selecao', ph: 'federal / estadual',
+    opcoes: ['federal', 'estadual'] },
+  { id: 'sobreposicao', grupo: 'Restrição', rotulo: 'Sobreposição', tipo: 'selecao', ph: 'parcial / integral', opcoes: ['parcial', 'integral'] },
+  { id: 'nomeTI', grupo: 'Restrição', rotulo: 'Nome da Terra Indígena', ph: 'NOME DA TERRA INDÍGENA' },
+  { id: 'nomeUC', grupo: 'Restrição', rotulo: 'Unidade de Conservação (APA)', ph: 'NOME DA UNIDADE DE CONSERVAÇÃO', padrao: 'APA Serra da Tabatinga' },
+  { id: 'motivoBloqueio', grupo: 'Restrição', rotulo: 'Motivo do bloqueio', ph: 'MOTIVO DO BLOQUEIO' },
+  { id: 'motivo', grupo: 'Restrição', rotulo: 'Motivo (conclusão)', ph: 'MOTIVO' },
+
+  { id: 'numDocumento', grupo: 'Documentos', rotulo: 'Nº do LAR apresentado', ph: 'Nº DO DOCUMENTO' },
+  { id: 'dataValidade', grupo: 'Documentos', rotulo: 'Validade do LAR', tipo: 'data', ph: 'DATA' },
+  { id: 'numLAR', grupo: 'Documentos', rotulo: 'Nº do LAR vencido', ph: 'Nº DO LAR' },
+  { id: 'dataVencimento', grupo: 'Documentos', rotulo: 'Data de vencimento do LAR', tipo: 'data', ph: 'DATA DE VENCIMENTO' },
+  { id: 'dataProtocolo', grupo: 'Documentos', rotulo: 'Data do protocolo de renovação', tipo: 'data', ph: 'DATA DO PROTOCOLO' },
+  { id: 'documentosApresentados', grupo: 'Documentos', rotulo: 'Documentos apresentados', ph: 'DESCRIÇÃO DOS DOCUMENTOS APRESENTADOS' },
+  { id: 'documentoNecessario', grupo: 'Documentos', rotulo: 'Documento ou informação necessária', ph: 'DOCUMENTO OU INFORMAÇÃO NECESSÁRIA' },
+  { id: 'cuidado', grupo: 'Documentos', rotulo: 'Cuidado na operação', ph: 'CUIDADO A SER OBSERVADO NA OPERAÇÃO' },
+
+  { id: 'areaProdutiva', grupo: 'Capacidade produtiva', rotulo: 'Área produtiva (ha)', tipo: 'numero', ph: 'ÁREA PRODUTIVA' },
+  { id: 'rendimento', grupo: 'Capacidade produtiva', rotulo: 'Rendimento CONAB (kg/ha)', tipo: 'numero', ph: 'RENDIMENTO' },
+  { id: 'producaoKg', grupo: 'Capacidade produtiva', rotulo: 'Produção (kg)', tipo: 'numero', ph: 'PRODUÇÃO EM KG', dica: 'Use a Calculadora de Capacidade Produtiva.' },
+  { id: 'producaoT', grupo: 'Capacidade produtiva', rotulo: 'Produção (t)', tipo: 'numero', ph: 'PRODUÇÃO EM T' },
+  { id: 'sacas', grupo: 'Capacidade produtiva', rotulo: 'Nº de sacas (60 kg)', tipo: 'numero', ph: 'Nº DE SACAS' },
+
+  { id: 'tipoContrato', grupo: 'Operação', rotulo: 'Tipo de contrato', tipo: 'selecao', ph: 'fixo / balcão', opcoes: ['fixo', 'balcão'] },
+  { id: 'contrato', grupo: 'Operação', rotulo: 'Nº do contrato', ph: 'Nº DO CONTRATO' },
+  { id: 'volume', grupo: 'Operação', rotulo: 'Volume do contrato (kg)', tipo: 'numero', ph: 'VOLUME DO CONTRATO' },
+  { id: 'produto', grupo: 'Operação', rotulo: 'Produto', tipo: 'lista', ph: 'SOJA/MILHO', opcoes: ['soja', 'milho'] },
+  { id: 'dataGeracao', grupo: 'Operação', rotulo: 'Data da geração do contrato', tipo: 'data', ph: 'DATA DA GERAÇÃO' },
+  { id: 'hedge', grupo: 'Operação', rotulo: 'Nº do hedge', ph: 'Nº DO HEDGE' },
+  { id: 'volumeHedge', grupo: 'Operação', rotulo: 'Volume do hedge (kg)', tipo: 'numero', ph: 'VOLUME DO HEDGE' },
+  { id: 'pedido', grupo: 'Operação', rotulo: 'Nº do pedido de insumos', ph: 'Nº DO PEDIDO' },
+  { id: 'dataEmissao', grupo: 'Operação', rotulo: 'Data de emissão do pedido', tipo: 'data', ph: 'DATA DA EMISSÃO' },
+  { id: 'numOperacao', grupo: 'Operação', rotulo: 'Nº do contrato/pedido (comunicação final)', ph: 'Nº' },
+
+  { id: 'atividadePrincipal', grupo: 'Cadastro', rotulo: 'Atividade principal', ph: 'ATIVIDADE PRINCIPAL' },
+  { id: 'atividadesSecundarias', grupo: 'Cadastro', rotulo: 'Atividades secundárias', ph: 'ATIVIDADES SECUNDÁRIAS' },
+  { id: 'chamadoMDM', grupo: 'Cadastro', rotulo: 'Nº do chamado (MDM)', ph: 'Nº DO CHAMADO' },
+];
+
+/* Campos derivados do tipo de pessoa (não aparecem no painel). */
+const DERIVADOS = {
+  Sujeito: { de: 'tipoPessoa', ph: 'O produtor / A empresa', PF: 'O produtor', PJ: 'A empresa' },
+  sujeito: { de: 'tipoPessoa', ph: 'o produtor / a empresa', PF: 'o produtor', PJ: 'a empresa' },
+  doc:     { de: 'tipoPessoa', ph: 'CPF/CNPJ', PF: 'CPF', PJ: 'CNPJ' },
+  comEste: { de: 'tipoPessoa', ph: 'com este produtor / com esta empresa', PF: 'com este produtor', PJ: 'com esta empresa' },
+};
+
+/* =====================================================================
+   TEXTOS (um parágrafo por chave)
+   ===================================================================== */
+const TX = {
+  /* ---- 1 e 2 – Identificação e situação da área ---- */
+  idLimpo: '{{Sujeito}} {{nome}} não possui restrições ambientais vinculadas ao seu {{doc}}. Da mesma forma, a área indicada para análise, localizada no município de {{municipio}} e registrada no CAR nº {{car}}, não apresenta passivos ou bloqueios ambientais, conforme demonstrado no Relatório de Conformidade Ambiental anexo.',
+  idEmbargoCpf: '{{Sujeito}} {{nome}} possui embargo {{orgao}} vinculado ao seu {{doc}}, incidente sobre área localizada no município de {{municipioEmbargo}} e registrada no CAR nº {{carEmbargo}}, motivo pelo qual seu cadastro (clifor) encontrava-se bloqueado no sistema ADMBR.',
+  idEmbargoArea: '{{Sujeito}} {{nome}} não possui restrições ambientais vinculadas ao seu {{doc}}. No entanto, a área indicada para análise, localizada no município de {{municipio}} e registrada no CAR nº {{car}}, encontrava-se bloqueada em razão de embargo {{orgao}} incidente sobre parte do imóvel.',
+  idTI: '{{Sujeito}} {{nome}} não possui restrições ambientais vinculadas ao seu {{doc}}. No entanto, a área indicada para análise, localizada no município de {{municipio}} e registrada no CAR nº {{car}}, encontrava-se bloqueada em razão de sobreposição {{sobreposicao}} com a Terra Indígena {{nomeTI}}, classificada com status legal “Declarada”.',
+  idAssentamento: '{{Sujeito}} {{nome}} não possui restrições ambientais vinculadas ao seu {{doc}}. No entanto, a área indicada para análise, localizada no município de {{municipio}} e registrada no CAR nº {{car}}, encontrava-se bloqueada em razão do risco de triangulação com áreas objeto de embargo {{orgao}}, vinculadas ao CAR nº {{carAssentamento}}.',
+  idPvgLar: '{{Sujeito}} {{nome}} possui restrição ambiental vinculada ao seu {{doc}} no âmbito do Protocolo Verde dos Grãos do Pará (PVG), decorrente de desmatamento acima do limite permitido (25 hectares), incidente sobre a área localizada no município de {{municipioPA}}/PA e registrada no CAR nº {{car}}.',
+  idExcepcional: '{{Sujeito}} {{nome}} {{escolha:não possui|possui}} restrições ambientais vinculadas ao seu {{doc}}. {{escolha:No entanto|Além disso}}, a área indicada para análise, localizada no município de {{municipio}} e registrada no CAR nº {{car}}, encontra-se bloqueada em razão de {{escolha:embargo do Ibama, ICMBio, Sema-MT, Semad-GO ou LDI-PA|restrição associada ao Protocolo Verde dos Grãos do Pará (PVG)|ausência de área de cultivo de grãos|desmatamento identificado no PRODES 2025}}.',
+  idCarStatus: '{{Sujeito}} {{nome}} não possui restrições ambientais vinculadas ao seu {{doc}}. No entanto, a área indicada para análise, localizada no município de {{municipio}} e registrada no CAR nº {{car}}, encontrava-se bloqueada em razão de o CAR constar com status {{carStatus}}.',
+  idCultivo: '{{Sujeito}} {{nome}} não possui restrições ambientais vinculadas ao seu {{doc}}. No entanto, a área indicada para análise, localizada no município de {{municipio}} e registrada no CAR nº {{car}}, encontra-se bloqueada em razão da ausência de comprovação de que, no mínimo, 10% (dez por cento) de sua extensão seja destinada ao cultivo de grãos.',
+  idPvg: '{{Sujeito}} {{nome}} possui restrições associadas ao Protocolo Verde dos Grãos do Pará (PVG), em decorrência de desmatamento superior ao limite permitido (25 hectares) na própria área indicada para análise, localizada no município de {{municipioPA}}/PA e registrada no CAR nº {{car}}, conforme Relatório de Conformidade Ambiental anexo.',
+  idBase: '{{Sujeito}} {{nome}} {{escolha:não possui|possui}} restrições ambientais vinculadas ao seu {{doc}}. {{escolha:Da mesma forma|No entanto}}, a área indicada para análise, localizada no município de {{municipio}} e registrada no CAR nº {{car}}, {{escolha:não apresenta passivos ou bloqueios ambientais|encontra-se bloqueada em razão de {{motivoBloqueio}}}}, conforme Relatório de Conformidade Ambiental anexo.',
+  reenqId: 'A empresa {{nome}} encontra-se atualmente classificada como cliente DIRETO. Contudo, conforme análise cadastral, sua atividade principal é a {{atividadePrincipal}}, e entre suas atividades secundárias constam {{atividadesSecundarias}}.',
+
+  /* ---- 3 – Fundamentação ---- */
+  embIsolado: 'Em análise às imagens de satélite, verificou-se que os polígonos embargados estão devidamente isolados da área destinada ao cultivo de grãos, encontrando-se a área, portanto, em conformidade.',
+  emb150: 'A área indicada para análise, localizada no município de {{municipio}} e registrada no CAR nº {{car}}, encontra-se a uma distância superior a 150 km da área objeto do embargo. Dessa forma, atende ao critério de mitigação do risco de triangulação previsto na política da companhia, não tendo sido identificados impedimentos sob esse aspecto.',
+  tiPolitica: 'De acordo com a política vigente da companhia, somente as áreas sobrepostas a terras indígenas com status “Homologada” pelo Governo Federal são passíveis de bloqueio.',
+  tiDeclarada: 'Dessa forma, considerando que a Terra Indígena sobreposta à área objeto da presente análise possui status legal “Declarada”, conclui-se que, até o momento, a área permanece em conformidade com os critérios socioambientais estabelecidos pela companhia.',
+  assentamento: 'O CAR nº {{carAssentamento}} corresponde a uma área de assentamento na qual o imóvel do cliente está inserido. Assim, o bloqueio identificado decorre exclusivamente de passivos ambientais pertencentes a terceiros, associados ao assentamento, e não ao cliente nem à sua área específica.',
+  pvgRegularizacao: 'Para a regularização do referido passivo, é necessário apresentar o Licenciamento Ambiental Rural (LAR) válido e/ou o Plano de Recuperação de Áreas Degradadas (PRAD) elaborado por profissional habilitado e devidamente protocolado junto ao órgão ambiental competente.',
+  pvgLarValido: 'No presente chamado, foi apresentado o Licenciamento Ambiental Rural (LAR) nº {{numDocumento}}, válido até {{dataValidade}}, que autoriza o desenvolvimento de atividades agrícolas de culturas de ciclo curto, incluindo soja, milho e demais culturas anuais.',
+  pvgApta: 'Assim, a área encontra-se regularizada do ponto de vista ambiental e apta a operações comerciais.',
+  carBcb: 'Tal condição está em desacordo com as diretrizes estabelecidas pela política interna da ADM, bem como com a Resolução BCB nº 140/2021, que dispõe sobre impedimentos e restrições aplicáveis à concessão de crédito rural para imóveis que apresentem pendências ou irregularidades de natureza socioambiental.',
+  carStatusPolitica: 'Conforme os critérios internos vigentes, somente imóveis cadastrados no CAR com status “Ativo” ou “Pendente” podem ser vinculados a contratos e operações comerciais. Consequentemente, imóveis com status “Suspenso” ou “Cancelado” não são elegíveis para vinculação a negociações ou contratação de operações.',
+  cultivoSatelite: 'Conforme análise das imagens de satélite, foi constatado que a propriedade não apresenta áreas de cultivo de grãos. Dessa forma, conclui-se que eventual volume de grãos negociado não poderia ter a referida área como origem ou como área de formação de lavoura.',
+  naoApta: 'Dessa forma, a área em análise não atende aos critérios de compliance socioambiental e, consequentemente, não está apta a ser vinculada a qualquer operação.',
+  larVencido: 'Com o intuito de regularizar o referido passivo, foi apresentado o Licenciamento Ambiental Rural (LAR) nº {{numLAR}}; todavia, o documento encontra-se vencido desde {{dataVencimento}}. {{escolha:Não foi apresentado protocolo de renovação da licença.|O protocolo de renovação foi realizado em {{dataProtocolo}}, fora do prazo legal.}}',
+  lar120: 'Para que o LAR seja considerado válido e tenha sua eficácia prorrogada após o vencimento, o requerimento de renovação deve ter sido protocolado junto ao órgão ambiental competente com antecedência mínima de 120 (cento e vinte) dias da data de expiração da licença, conforme dispõem o art. 14, § 4º, da Lei Complementar Federal nº 140/2011 e o art. 18, § 4º, da Resolução CONAMA nº 237/1997.',
+  larEficacia: 'Por conseguinte, caso o protocolo de renovação tenha sido realizado fora do prazo estabelecido ou após a data de expiração da licença, opera-se a perda de eficácia do ato administrativo, não havendo prorrogação automática.',
+  larSancoes: 'Nesses casos, a atividade passa a ser exercida sem o devido licenciamento, sujeitando o empreendedor às sanções administrativas cabíveis, uma vez que o protocolo extemporâneo (fora do prazo) não tem o condão de restabelecer a validade da licença vencida.',
+  prodesDiretriz: 'Conforme diretriz estabelecida pela Diretoria de Sustentabilidade da ADM, imóveis que apresentem registros dessa natureza devem ser automaticamente classificados como restritos para fins de vinculação a operações comerciais, independentemente de sua situação perante a legislação ambiental vigente.',
+  prodesPolitica: 'É importante destacar que esse critério decorre de uma Política Global da ADM, não constituindo exigência legal nem obrigação prevista em acordos setoriais. Trata-se de compromisso voluntariamente assumido pela companhia como parte de sua estratégia de sustentabilidade e de gestão de riscos socioambientais.',
+  prodesSemRegularizacao: 'Em razão desse enquadramento, não há previsão de regularização da restrição mediante a simples apresentação de documentação complementar, uma vez que o impedimento está vinculado ao atendimento das diretrizes corporativas internas da companhia.',
+  fundBase: '[Descrever a análise realizada (imagens de satélite, bases consultadas, documentos apresentados) e citar a norma, o protocolo ou a política que fundamenta a conclusão.]',
+
+  /* ---- Trechos fundamentados (enviados pela área) ---- */
+  apa1: 'Quanto ao bloqueio por sobreposição à Unidade de Conservação, esclarece-se que a {{nomeUC}} pertence ao Grupo de Uso Sustentável (art. 15 da Lei Federal nº 9.985/2000 - SNUC).',
+  apa2: 'Essa categoria permite expressamente o domínio privado e a exploração econômica do solo, inclusive para o cultivo de grãos, desde que respeitadas as limitações do Código Florestal (CAR, Reserva Legal e APP) e as diretrizes do seu Plano de Manejo. Portanto, sob a ótica estrita da categoria da UC, a área seria passível de liberação.',
+  art54Intro: 'Nesse contexto, cabe destacar o disposto no artigo 54 do Decreto Federal nº 6.514/2008, que regulamenta a Lei de Crimes Ambientais (Lei nº 9.605/1998):',
+  art54Texto: 'Art. 54. Adquirir, intermediar, transportar ou comercializar produto ou subproduto de origem animal ou vegetal produzido sobre área objeto de embargo.',
+  art54Pena: 'Penalidade: multa de R$ 500,00 (quinhentos reais) por quilograma ou unidade.',
+  ibamaDoc1: 'Verificou-se, ainda, a apresentação de documentação com o objetivo de demonstrar eventual regularização do passivo identificado.',
+  ibamaDoc2: 'Todavia, os documentos anexados consistem em {{documentosApresentados}}',
+  ibamaDoc3: 'Ressalta-se que tais documentos não possuem efeito de desembargo sobre autuações aplicadas pelo IBAMA, em razão da independência das esferas administrativas e da ausência de competência do órgão ambiental estadual para suspender, revogar ou anular sanções impostas pela autarquia federal.',
+  ibamaDoc4: 'Nos termos da Lei Complementar nº 140/2011 e do Decreto Federal nº 6.514/2008, o levantamento de embargo aplicado pelo IBAMA depende de ato formal e específico expedido pelo próprio órgão federal competente, ou de decisão judicial expressa.',
+  ibamaDoc5: 'Dessa forma, licenças, autorizações ou demais atos administrativos emitidos por órgão ambiental estadual não substituem nem afastam a necessidade de regularização do passivo ambiental junto à esfera federal.',
+  ibamaDoc6: 'Diante do exposto, conclui-se que as áreas analisadas não atendem aos critérios de conformidade socioambiental exigidos para negociação.',
+  ibamaDoc7: 'Assim, não recomendamos a realização de operações vinculadas às referidas áreas, tampouco a áreas que não observem o raio mínimo de 150km de distanciamento previsto na política de prevenção ao risco de triangulação da companhia, permanecendo o bloqueio socioambiental aplicável até que seja comprovada a regularização da restrição ambiental identificada.',
+  novaArea1: 'Em análise das imagens de satélite, verificou-se que os polígonos embargados não estão isolados das áreas destinadas ao cultivo agrícola, havendo evidências de plantio de soja e milho na última safra dentro da área objeto da restrição.',
+  novaArea2: 'Diante dos elementos analisados, verifica-se que a área objeto da presente solicitação possui embargo ambiental {{esferaEmbargo}} que não vem sendo efetivamente observado, uma vez que há indícios de continuidade da atividade agrícola em áreas embargadas.',
+  novaArea3: 'Tal cenário evidencia risco de triangulação de produto, caracterizado pela mistura de grãos produzidos em áreas regulares com aqueles oriundos de áreas sujeitas a restrições ambientais.',
+  novaArea4: 'Nesse contexto, destaca-se que o artigo 54 do Decreto Federal nº 6.514/2008 estabelece:',
+  novaArea5: 'Art. 54. Adquirir, intermediar, transportar ou comercializar produto ou subproduto de origem animal ou vegetal produzido sobre área objeto de embargo:',
+  novaArea6: 'Multa de R$ 500,00 (quinhentos reais) por quilograma ou unidade.',
+  novaArea7: 'Dessa forma, considerando que a área objeto da presente análise não foi vinculada à operação desde sua origem, tampouco poderia ter sido em razão das restrições ambientais identificadas, conclui-se que a área não atende aos requisitos de conformidade socioambiental exigidos pela companhia.',
+  novaArea8: 'Ademais, sua eventual vinculação à operação neste momento representaria relevante risco de descumprimento das diretrizes internas e da legislação aplicável.',
+  novaArea9: 'Assim, **o bloqueio será mantido**, não sendo recomendada a vinculação da área à operação em questão.',
+  washout1: 'Conforme informado no chamado, a solicitação de desbloqueio tem por objetivo viabilizar a continuidade da operação referente ao Contrato nº {{contrato}}, envolvendo a comercialização de algodão.',
+  washout2: 'Ressalta-se que operações de washout, bem como contratações de volume envolvendo algodão, não estão sujeitas ao crivo da análise socioambiental realizada pela Sustentabilidade.',
+  washout3: 'Dessa forma, considerando a natureza da operação, o desbloqueio foi realizado de forma excepcional, sem a necessidade de análise socioambiental da área ou do produtor.',
+  washout4: 'Diante do exposto, o desbloqueio foi devidamente efetuado para permitir o prosseguimento da operação informada no chamado.',
+  reenq2: 'Diante desse enquadramento operacional, conclui-se que a empresa possui perfil de atuação como cliente indireto, e não direto, como atualmente registrado.',
+  reenqSemCar: 'Considerando que não foram identificadas restrições ambientais vinculadas ao CNPJ, entende-se que a impossibilidade de prosseguimento da operação decorre da ausência de CAR, uma vez que a empresa estava classificada de forma incorreta como cliente direto.',
+  reenqFarelo: 'Conforme informado no chamado, o pedido de desbloqueio tem como finalidade a continuidade de operação envolvendo farelo de soja.',
+  reenq3: 'Dessa forma, foi realizada a reclassificação da empresa de cliente DIRETO para INDIRETO, em conformidade com as diretrizes vigentes.',
+  reenq4: 'A validação e a confirmação dessa alteração é conduzidas pelo time de MDM, para o qual o chamado já foi devidamente direcionado (chamado nº {{chamadoMDM}}).',
+
+  /* ---- 4 – Capacidade produtiva ---- */
+  capUF: 'Adicionalmente, a área indicada possui aproximadamente {{areaProdutiva}} hectares de área produtiva. Considerando o fator médio de rendimento estabelecido pela CONAB para o Estado de {{uf}}, de {{rendimento}} kg/ha, a capacidade estimada de produção da área é de aproximadamente {{producaoKg}} kg, equivalente a {{producaoT}} toneladas de grãos e {{sacas}} sacas de 60 kg.',
+  capPA: 'Adicionalmente, a área indicada possui aproximadamente {{areaProdutiva}} hectares de área produtiva. Considerando o fator médio de rendimento estabelecido pela CONAB para o Estado do Pará, de {{rendimento}} kg/ha, a capacidade estimada de produção da área é de aproximadamente {{producaoKg}} kg, equivalente a {{producaoT}} toneladas de grãos e {{sacas}} sacas de 60 kg.',
+  capPAInfo: 'A título de informação, a área indicada possui aproximadamente {{areaProdutiva}} hectares de área produtiva. Considerando o fator médio de rendimento estabelecido pela CONAB para o Estado do Pará, de {{rendimento}} kg/ha, a capacidade estimada de produção da área é de aproximadamente {{producaoKg}} kg, equivalente a {{producaoT}} toneladas de grãos e {{sacas}} sacas de 60 kg.',
+  capBase: '{{escolha:Adicionalmente|A título de informação}}, a área indicada possui aproximadamente {{areaProdutiva}} hectares de área produtiva. Considerando o fator médio de rendimento estabelecido pela CONAB para o Estado de {{uf}}, de {{rendimento}} kg/ha, a capacidade estimada de produção da área é de aproximadamente {{producaoKg}} kg, equivalente a {{producaoT}} toneladas de grãos e {{sacas}} sacas de 60 kg.',
+
+  /* ---- 5 – Operação ---- */
+  opAlcadaL: 'Conforme informado no chamado, o pedido de análise e eventual desbloqueio tem por objetivo viabilizar a continuidade da operação referente ao contrato {{tipoContrato}} nº {{contrato}}, envolvendo o volume de {{volume}} kg de {{produto}}, atualmente enquadrado na alçada L em razão do bloqueio acima mencionado.',
+  opGerado: 'Conforme informado no chamado, o pedido de análise e eventual desbloqueio tem por objetivo viabilizar a continuidade da operação referente ao contrato {{tipoContrato}} nº {{contrato}}, envolvendo o volume de {{volume}} kg de {{produto}}, firmado em {{dataGeracao}}, que tem como área de formação de lavoura vinculada o imóvel registrado no CAR nº {{car}}.',
+  opHedge: 'Conforme informado no chamado, o pedido de análise e eventual desbloqueio tem por finalidade a aplicação do hedge nº {{hedge}}, visando à geração de novo contrato no volume de {{volumeHedge}} kg de {{produto}}.',
+  opInsumos: 'Conforme informado no chamado, o pedido de análise e eventual desbloqueio tem por objetivo viabilizar a continuidade da operação vinculada ao Pedido de Insumos nº {{pedido}}, emitido em {{dataEmissao}}, cuja área de entrega e/ou aplicação corresponde à área objeto da presente análise.',
+  opExcContrato: 'Conforme informado no chamado, o pedido de desbloqueio tem por objetivo viabilizar a continuidade da operação vinculada ao contrato {{tipoContrato}} nº {{contrato}}, envolvendo o volume de {{volume}} kg de {{produto}}, firmado em {{dataGeracao}}, cuja área de formação de lavoura está vinculada ao CAR nº {{car}}.',
+  opExcInsumos: 'Conforme informado no chamado, o pedido de desbloqueio tem por objetivo viabilizar a continuidade da operação vinculada ao Pedido de Insumos nº {{pedido}}, emitido em {{dataEmissao}}, cuja área de entrega e/ou aplicação corresponde à área objeto da presente análise.',
+  opCarInsumos: 'Conforme informado no chamado, o pedido de desbloqueio tem por objetivo viabilizar a continuidade da operação relacionada ao Pedido de Insumos nº {{pedido}}, emitido em {{dataEmissao}}, cuja entrega está prevista para a Fazenda {{nomeFazenda}}, localizada no município de {{municipio}}.',
+  opCarContrato: 'Conforme informado no chamado, o pedido de desbloqueio tem por objetivo viabilizar o cumprimento do contrato fixo nº {{contrato}}, firmado em {{dataGeracao|DATA}}, referente ao volume total de {{volume|VOLUME}} kg de {{produto}}, que tem como área de formação de lavoura vinculada o imóvel registrado no CAR nº {{car}}, localizado no município de {{municipio}}.',
+  opBase: 'Conforme informado no chamado, o pedido de análise e eventual desbloqueio tem por objetivo [DESCREVER A OPERAÇÃO: contrato, hedge ou pedido de insumos, com número, volume e data].',
+
+  /* ---- 6 – Conclusão ---- */
+  conFavoravel: 'Diante do exposto, conclui-se que tanto {{sujeito}} quanto a área objeto da presente análise encontram-se em conformidade sob a ótica socioambiental, **não tendo sido identificados impedimentos à realização de negociações.**',
+  conFavDesbloqueio: 'Diante do exposto, conclui-se que tanto {{sujeito}} quanto a área objeto da presente análise encontram-se em conformidade sob a ótica socioambiental, não tendo sido identificados impedimentos à realização de negociações, **motivo pelo qual o desbloqueio foi devidamente realizado.**',
+  conFavOperacao: 'Diante do exposto, considerando que {{sujeito}} e a área objeto da presente análise encontram-se em conformidade sob a ótica socioambiental e que o volume negociado é compatível com a capacidade produtiva da área, conclui-se que não há impedimentos socioambientais à operação, **motivo pelo qual o desbloqueio foi devidamente realizado.**',
+  conFavLar: 'Diante do exposto, considerando que {{sujeito}} e a área objeto da presente análise encontram-se em conformidade sob a ótica socioambiental, conforme comprovado pelo licenciamento vigente, e que o volume negociado é compatível com a capacidade produtiva estimada, conclui-se que não há impedimentos socioambientais à operação, **motivo pelo qual o desbloqueio foi devidamente realizado.**',
+  excPontual: 'Considerando que a operação já foi formalizada e se encontra em fase de execução e cumprimento contratual, **o desbloqueio será concedido em caráter excepcional e pontual**, exclusivamente para permitir a conclusão da operação já existente, não constituindo autorização para a formalização de novos negócios vinculados à área em questão.',
+  excVedadas: 'Ressalta-se que eventuais novas negociações, contratações ou operações envolvendo o cliente e/ou a área objeto desta análise permanecem vedadas e não contam com a anuência da equipe de Sustentabilidade.',
+  excComunicar: 'Dessa forma, solicita-se que, após o integral cumprimento {{escolha:do contrato|do Pedido de Insumos}} nº {{numOperacao}}, a equipe responsável comunique a conclusão da operação, para que o bloqueio seja restabelecido no sistema, mitigando o risco de formalização de novas negociações sem a devida avaliação socioambiental.',
+  excAnterior: 'Diante do exposto, considerando que a operação foi formalizada anteriormente ao apontamento que ensejou o bloqueio da área, presume-se que, à época de sua formalização, o imóvel atendia aos requisitos de elegibilidade então exigidos.',
+  excSemRegularizar: 'Dessa forma, **o desbloqueio será realizado em caráter excepcional** e exclusivamente para possibilitar o cumprimento da operação já contratada, sem que isso represente a regularização da restrição atualmente existente.',
+  excSuspenso: 'Ressalta-se que não estão autorizadas novas negociações, contratações ou vinculações envolvendo a área em questão enquanto o status do CAR permanecer “Suspenso”, sendo necessária a regularização cadastral para o restabelecimento de sua elegibilidade perante os critérios socioambientais aplicáveis.',
+  excChamadoAberto: 'Por fim, este chamado permanecerá aberto. Solicita-se que, após a conclusão da operação vinculada ao {{escolha:Pedido de Insumos|Contrato}} nº {{numOperacao}}, a equipe responsável comunique o encerramento da entrega, para que o bloqueio da área seja restabelecido.',
+  conCultivo: 'Diante do exposto, considerando que a análise das imagens de satélite confirmou a inexistência de áreas de cultivo de grãos na propriedade objeto desta avaliação, o que impossibilita seu enquadramento como área de formação de lavoura, e considerando, ainda, que o desbloqueio solicitado visa à {{escolha:continuidade da operação acima referida|formalização de nova operação}}, **o bloqueio deverá ser mantido.**',
+  conPvg: 'Diante do exposto, verifica-se que a área em análise não está em conformidade socioambiental para negociações. Assim, **o bloqueio será mantido**, não sendo recomendadas negociações {{comEste}}, nesta área ou em áreas que não respeitem o raio de triangulação de 150 km previsto na política da companhia.',
+  conLarVencido: 'Diante do exposto, considerando a existência da restrição ambiental apontada e a ausência de documento válido para sua regularização, **o bloqueio será mantido**, não sendo recomendadas negociações {{comEste}}, nesta área ou em áreas que não respeitem o raio de triangulação de 150 km previsto na política da companhia.',
+  conProdes: 'Dessa forma, considerando que as áreas objeto da presente análise não atendem aos critérios de conformidade socioambiental atualmente adotados pela ADM, **o bloqueio será mantido**, não sendo recomendada sua vinculação a qualquer tipo de operação comercial, incluindo a comercialização de grãos, operações de originação ou negociações envolvendo insumos.',
+  conBase: 'Diante do exposto, {{escolha:conclui-se que tanto {{sujeito}} quanto a área objeto da presente análise encontram-se em conformidade sob a ótica socioambiental, motivo pelo qual o desbloqueio foi devidamente realizado|considerando {{motivo}}, o bloqueio será mantido, não sendo recomendadas negociações {{comEste}} nesta área}}.',
+
+  /* ---- 7 – Orientação ---- */
+  monCapacidade: 'Ressalta-se, contudo, a importância do monitoramento contínuo da capacidade produtiva estimada da área, de modo a assegurar que os volumes comercializados e recebidos pela companhia permaneçam compatíveis com o potencial produtivo do imóvel rural.',
+  monRastreabilidade: 'Tal procedimento contribui para a manutenção da rastreabilidade da produção, da coerência entre os volumes negociados e a capacidade produtiva da área e da conformidade socioambiental exigida pelas políticas e pelos procedimentos internos da companhia.',
+  monTI: 'Recomenda-se, contudo, o monitoramento contínuo do cliente/fornecedor, a fim de identificar e reportar eventuais avanços no processo de demarcação da referida terra indígena.',
+  oriAreas: 'Assim, orienta-se a apresentação de outras áreas de originação para análise, de modo que o volume negociado e a ser recebido pela companhia esteja devidamente respaldado por capacidade produtiva e regularidade socioambiental compatíveis com o montante da operação.',
+  oriBase: '{{escolha:Assim, orienta-se a apresentação de {{documentoNecessario}}|Ressalta-se a importância de {{cuidado}}}}.',
+};
+
+/* Grupos de opções reutilizados */
+const OP = {
+  fundEmbargo: { grupo: 'Fundamentação', instrucao: 'mantenha apenas a opção aplicável.', opcoes: [
+    { rotulo: 'Opção 1 – Embargo isolado (a área analisada é a mesma do embargo)', texto: TX.embIsolado },
+    { rotulo: 'Opção 2 – Área de originação a mais de 150 km do embargo', texto: TX.emb150 },
+  ] },
+  operacao4: { grupo: 'Operação', instrucao: 'mantenha apenas a opção que corresponde ao chamado e apague as demais.', opcoes: [
+    { rotulo: 'Opção 1 – Contrato fixo/balcão na alçada L', texto: TX.opAlcadaL },
+    { rotulo: 'Opção 2 – Contrato fixo/balcão já gerado', texto: TX.opGerado },
+    { rotulo: 'Opção 3 – Hedge para nova compra', texto: TX.opHedge },
+    { rotulo: 'Opção 4 – Pedido de insumos', texto: TX.opInsumos },
+  ] },
+};
+
+const OBS_CALC = 'Realizar o cálculo na Calculadora de Capacidade Produtiva.';
 
 const MODELOS = [
+  /* ===================== A. APROVADO – DESBLOQUEIO ===================== */
   {
-    id: "fav-01",
-    categoria: "favoravel",
-    subcategoria: "Prospecção de clientes",
-    titulo: "CASO 1 – ANÁLISE DE PROSPECÇÃO DE CLIENTES – CLIENTE E ÁREA SEM BLOQUEIOS",
-    quandoUsar: "prospecção ou cadastro de cliente em que nem o CPF/CNPJ nem a área indicada apresentam restrições socioambientais.",
-    obs: ["Realizar o cálculo pela ferramenta de Cálculo de Capacidade Produtiva (Calculadora de Capacidade Produtiva)"],
-    fonte: "Word",
-    paragrafos: [
-      "[O produtor / A empresa] [NOME / RAZÃO SOCIAL] não possui restrições ambientais vinculadas ao seu [CPF/CNPJ]. Da mesma forma, a área indicada para análise, localizada no município de [MUNICÍPIO/UF] e registrada no CAR nº [Nº DO CAR], não apresenta passivos ou bloqueios ambientais, conforme demonstrado no Relatório de Conformidade Ambiental anexo.",
-      "Adicionalmente, a área indicada possui aproximadamente [ÁREA PRODUTIVA] hectares de área produtiva. Considerando o fator médio de rendimento estabelecido pela CONAB para o Estado de [UF], de [RENDIMENTO] kg/ha, a capacidade estimada de produção da área é de aproximadamente [PRODUÇÃO] kg, equivalente a [PRODUÇÃO] toneladas de grãos e [PRODUÇÃO] sacas (60kg).",
-      "Diante do exposto, conclui-se que tanto [o produtor / a empresa] quanto a área objeto da presente análise encontram-se em conformidade sob a ótica socioambiental, **não tendo sido identificados impedimentos à realização de negociações.**",
-      "Ressalta-se, contudo, a importância do monitoramento contínuo da capacidade produtiva estimada da área, de modo a assegurar que os volumes comercializados e recebidos pela companhia permaneçam compatíveis com o potencial produtivo do imóvel rural.",
-      "Tal procedimento contribui para a manutenção da rastreabilidade da produção, da coerência entre os volumes negociados e a capacidade produtiva da área e da conformidade socioambiental exigida pelas políticas e pelos procedimentos internos da companhia.",
-    ],
+    id: 'a-01', categoria: 'aprovado', status: 'aprovado', subcategoria: 'Prospecção de clientes',
+    titulo: 'CASO 1 – ANÁLISE DE PROSPECÇÃO DE CLIENTES – CLIENTE E ÁREA SEM BLOQUEIOS',
+    quandoUsar: 'prospecção ou cadastro de cliente em que nem o CPF/CNPJ nem a área apresentam restrições.',
+    obs: [OBS_CALC], fonte: 'Word',
+    paragrafos: [TX.idLimpo, TX.capUF, TX.conFavoravel, TX.monCapacidade, TX.monRastreabilidade],
   },
   {
-    id: "fav-02",
-    categoria: "favoravel",
-    subcategoria: "Prospecção de clientes",
-    titulo: "CASO 2 – ANÁLISE PROSPECÇÃO DE CLIENTES – CLIENTE COM RESTRIÇÃO AMBIENTAL NO CPF/CNPJ E ÁREA DE ORIGINAÇÃO EM CONFORMIDADE",
-    obs: ["Realizar o cálculo pela ferramenta de Cálculo de Capacidade Produtiva (Calculadora de Capacidade Produtiva)"],
-    fonte: "Word",
+    id: 'a-02', categoria: 'aprovado', status: 'aprovado', subcategoria: 'Prospecção de clientes',
+    titulo: 'CASO 2 – ANÁLISE DE PROSPECÇÃO DE CLIENTES – CLIENTE COM RESTRIÇÃO NO CPF/CNPJ E ÁREA DE ORIGINAÇÃO EM CONFORMIDADE',
+    quandoUsar: 'prospecção em que o CPF/CNPJ tem embargo, mas o embargo está isolado da área de cultivo ou a área de originação fica a mais de 150 km do embargo.',
+    obs: [OBS_CALC], fonte: 'Word',
+    paragrafos: [TX.idEmbargoCpf, OP.fundEmbargo, TX.capUF, TX.conFavDesbloqueio, TX.monCapacidade, TX.monRastreabilidade],
+  },
+  {
+    id: 'a-03', categoria: 'aprovado', status: 'aprovado', subcategoria: 'Prospecção de clientes',
+    titulo: 'CASO 3 – ANÁLISE DE PROSPECÇÃO DE CLIENTES – CLIENTE SEM RESTRIÇÃO NO CPF/CNPJ E ÁREA DE ORIGINAÇÃO COM EMBARGO FEDERAL/ESTADUAL (IBAMA, ICMBio, SEMA-MT, SEMAD-GO E LDI-PA)',
+    quandoUsar: 'prospecção em que o CPF/CNPJ está limpo, mas a área tem embargo e os polígonos embargados estão isolados da área de cultivo.',
+    obs: [OBS_CALC], fonte: 'Word',
+    paragrafos: [TX.idEmbargoArea, TX.embIsolado, TX.capUF, TX.conFavDesbloqueio, TX.monCapacidade, TX.monRastreabilidade],
+  },
+  {
+    id: 'a-04', categoria: 'aprovado', status: 'aprovado', subcategoria: 'Operação em andamento',
+    titulo: 'CASO 4 – OPERAÇÃO EM ANDAMENTO (CONTRATO FIXO/BALCÃO, HEDGE OU PEDIDO DE INSUMOS) – CLIENTE COM RESTRIÇÃO NO CPF/CNPJ E ÁREA DE ORIGINAÇÃO EM CONFORMIDADE',
+    quandoUsar: 'mesma situação do Caso 2, mas o chamado se refere a uma operação (contrato, hedge ou pedido de insumos).',
+    obs: [OBS_CALC], fonte: 'Word',
+    paragrafos: [TX.idEmbargoCpf, OP.fundEmbargo, TX.capUF, OP.operacao4, TX.conFavOperacao],
+  },
+  {
+    id: 'a-05', categoria: 'aprovado', status: 'aprovado', subcategoria: 'Operação em andamento',
+    titulo: 'CASO 5 – OPERAÇÃO EM ANDAMENTO (CONTRATO FIXO/BALCÃO, HEDGE OU PEDIDO DE INSUMOS) – CLIENTE SEM RESTRIÇÃO NO CPF/CNPJ E ÁREA DE ORIGINAÇÃO COM EMBARGO FEDERAL/ESTADUAL (IBAMA, ICMBio, SEMA-MT, SEMAD-GO E LDI-PA)',
+    quandoUsar: 'mesma situação do Caso 3, mas o chamado se refere a uma operação (contrato, hedge ou pedido de insumos).',
+    obs: [OBS_CALC], fonte: 'Word',
+    paragrafos: [TX.idEmbargoArea, TX.embIsolado, TX.capUF, OP.operacao4, TX.conFavOperacao],
+  },
+  {
+    id: 'a-06', categoria: 'aprovado', status: 'aprovado', subcategoria: 'Demais casos',
+    titulo: 'CASO 6 – SOBREPOSIÇÃO COM TERRA INDÍGENA COM STATUS “DECLARADA”',
+    quandoUsar: 'a área foi bloqueada por sobreposição com Terra Indígena que ainda não está homologada (status “Declarada”).',
+    obs: [OBS_CALC], fonte: 'Word',
+    paragrafos: [TX.idTI, TX.tiPolitica, TX.tiDeclarada, TX.capUF, OP.operacao4, TX.conFavOperacao, TX.monTI],
+  },
+  {
+    id: 'a-07', categoria: 'aprovado', status: 'aprovado', subcategoria: 'Demais casos',
+    titulo: 'CASO 7 – EMBARGOS DE TERCEIROS EM ÁREA DE ASSENTAMENTO',
+    quandoUsar: 'o imóvel do cliente está dentro de um assentamento e o bloqueio decorre de embargos de terceiros vinculados ao CAR do assentamento.',
+    obs: [OBS_CALC], fonte: 'Word',
+    paragrafos: [TX.idAssentamento, TX.assentamento, TX.capUF, OP.operacao4, TX.conFavOperacao],
+  },
+  {
+    id: 'a-08', categoria: 'aprovado', status: 'aprovado', subcategoria: 'Demais casos',
+    titulo: 'CASO 8 – PROTOCOLO VERDE DOS GRÃOS DO PARÁ (PVG) – DESMATAMENTO SUPERIOR A 25 HECTARES – LAR VÁLIDO APRESENTADO',
+    quandoUsar: 'área no Pará com restrição do PVG, em que o cliente apresentou Licenciamento Ambiental Rural (LAR) dentro da validade.',
+    obs: [OBS_CALC], fonte: 'Word',
+    paragrafos: [TX.idPvgLar, TX.pvgRegularizacao, TX.pvgLarValido, TX.pvgApta, TX.capPA, OP.operacao4, TX.conFavLar],
+  },
+
+  /* ============ B. DESBLOQUEIO EXCEPCIONAL – OPERAÇÃO FORMALIZADA ============ */
+  {
+    id: 'b-09', categoria: 'excepcional', status: 'excepcional',
+    titulo: 'CASO 9 – RESTRIÇÃO AMBIENTAL (EMBARGO FEDERAL/ESTADUAL, PVG, AUSÊNCIA DE ÁREA DE CULTIVO OU PRODES 2025) – OPERAÇÃO JÁ FORMALIZADA',
+    quandoUsar: 'a área tem restrição que, em regra, mantém o bloqueio, mas existe contrato ou pedido de insumos já formalizado e em execução. Se precisar detalhar a restrição, copie o parágrafo de fundamentação do caso correspondente da seção C (painel de trechos, bloco 3).',
+    obs: [OBS_CALC], fonte: 'Word',
     paragrafos: [
-      "[O produtor / A empresa] [NOME / RAZÃO SOCIAL] possui embargo [Ibama / ICMBio / Sema-MT, LDI-PA] vinculadas ao seu [CPF/CNPJ] em área localizada no município de [MUNICÍPIO/UF] e registrada no CAR nº [Nº DO CAR], motivo pelo qual seu clifor encontrava-se bloqueado no sistema ADMBR.",
-      { opcoes: [
-          "Opção 1- Embargo Isolado: Em análise às imagens de satélite verificou-se que os polígonos embargados estão devidamente isolados da área destinada ao cultivo de grãos, portanto, em conformidade.",
-          "Opção 2 - Área embargada distante da área de originação (raio mínimo de 150 km): A área indicada para análise está localizada no município/estado de [MUNICÍPIO/UF] e registrada no CAR [Nº DO CAR], encontra-se a uma distância superior a 150km da área objeto do embargo. Dessa forma, atende ao critério de mitigação de risco de triangulação previsto na política da companhia, não sendo identificados impedimentos sob esse aspecto.",
+      TX.idExcepcional, TX.capUF,
+      { grupo: 'Operação', instrucao: 'mantenha apenas a opção que corresponde ao chamado e apague a outra.', opcoes: [
+        { rotulo: 'Opção 1 – Contrato fixo/balcão', texto: TX.opExcContrato },
+        { rotulo: 'Opção 2 – Pedido de insumos', texto: TX.opExcInsumos },
       ] },
-      "Adicionalmente, a área indicada possui aproximadamente [ÁREA PRODUTIVA] hectares de área produtiva. Considerando o fator médio de rendimento estabelecido pela CONAB para o Estado de [UF], de [RENDIMENTO] kg/ha, a capacidade estimada de produção da área é de aproximadamente [PRODUÇÃO] kg, equivalente a [PRODUÇÃO] toneladas de grãos e [PRODUÇÃO] sacas (60kg).",
-      "Diante do exposto, conclui-se que tanto [o produtor / a empresa] quanto a área objeto da presente análise encontram-se em conformidade sob a ótica socioambiental, **não tendo sido identificados impedimentos à realização de negociações, ==motivo pelo qual o desbloqueio foi devidamente realizado==.**",
-      "Ressalta-se, contudo, a importância do monitoramento contínuo da capacidade produtiva estimada da área, de modo a assegurar que os volumes comercializados e recebidos pela companhia permaneçam compatíveis com o potencial produtivo do imóvel rural.",
-      "Tal procedimento contribui para a manutenção da rastreabilidade da produção, da coerência entre os volumes negociados e a capacidade produtiva da área e da conformidade socioambiental exigida pelas políticas e pelos procedimentos internos da companhia.",
+      TX.excPontual, TX.excVedadas, TX.excComunicar,
     ],
   },
   {
-    id: "fav-03",
-    categoria: "favoravel",
-    subcategoria: "Prospecção de clientes",
-    titulo: "CASO 3 – ANÁLISE PROSPECÇÃO DE CLIENTES – CLIENTE SEM RESTRIÇÃO AMBIENTAL NO CPF/CNPJ E ÁREA DE ORIGINAÇÃO COM EMBARGO FEDERAL/ESTADUAL (IBAMA, ICMBio, SEMA-MT, SEMAD-GO E LDI-PA)",
-    obs: ["Realizar o cálculo pela ferramenta de Cálculo de Capacidade Produtiva (Calculadora de Capacidade Produtiva)"],
-    fonte: "Word",
+    id: 'b-10', categoria: 'excepcional', status: 'excepcional',
+    titulo: 'CASO 10 – CAR COM STATUS “SUSPENSO” OU “CANCELADO” – OPERAÇÃO JÁ FORMALIZADA',
+    quandoUsar: 'o CAR da área está suspenso ou cancelado, mas a operação foi formalizada antes do apontamento que gerou o bloqueio.',
+    fonte: 'Word',
     paragrafos: [
-      "[O produtor / A empresa] [NOME / RAZÃO SOCIAL] não possui restrições ambientais vinculadas ao seu [CPF/CNPJ]. No entanto, a área indicada para análise, localizada no município/estado de [MUNICÍPIO/UF] e registrada no CAR [Nº DO CAR], encontrava-se bloqueada em razão de [MOTIVO DO BLOQUEIO].",
-      "Em análise às imagens de satélite verificou-se que os polígonos embargados estão devidamente isolados da área destinada ao cultivo de grãos, portanto, em conformidade.",
-      "Adicionalmente, a área indicada possui aproximadamente [ÁREA PRODUTIVA] hectares de área produtiva. Considerando o fator médio de rendimento estabelecido pela CONAB para o Estado de [UF], de [RENDIMENTO] kg/ha, a capacidade estimada de produção da área é de aproximadamente [PRODUÇÃO] kg, equivalente a [PRODUÇÃO] toneladas de grãos e [PRODUÇÃO] sacas (60kg).",
-      "Diante do exposto, conclui-se que tanto [o produtor / a empresa] quanto a área objeto da presente análise encontram-se em conformidade sob a ótica socioambiental, **não tendo sido identificados impedimentos à realização de negociações, ==motivo pelo qual o desbloqueio foi devidamente realizado==.**",
-      "Ressalta-se, contudo, a importância do monitoramento contínuo da capacidade produtiva estimada da área, de modo a assegurar que os volumes comercializados e recebidos pela companhia permaneçam compatíveis com o potencial produtivo do imóvel rural.",
-      "Tal procedimento contribui para a manutenção da rastreabilidade da produção, da coerência entre os volumes negociados e a capacidade produtiva da área e da conformidade socioambiental exigida pelas políticas e pelos procedimentos internos da companhia.",
-    ],
-  },
-  {
-    id: "fav-04",
-    categoria: "favoravel",
-    subcategoria: "Operações já em andamento",
-    titulo: "CASO 4 – CASOS COM OPERAÇÕES JÁ EM ANDAMENTO (CONTRATO FIXO, HEDGE OU PEDIDO DE INSUMOS - CLIENTE COM RESTRIÇÃO AMBIENTAL NO CPF/CNPJ E ÁREA DE ORIGINAÇÃO EM CONFORMIDADE",
-    obs: ["Realizar o cálculo pela ferramenta de Cálculo de Capacidade Produtiva (Calculadora de Capacidade Produtiva)"],
-    fonte: "Word",
-    paragrafos: [
-      "[O produtor / A empresa] [NOME / RAZÃO SOCIAL] possui embargo [Ibama / ICMBio / Sema-MT, LDI-PA] vinculadas ao seu [CPF/CNPJ] em área localizada no município de [MUNICÍPIO/UF] e registrada no CAR nº [Nº DO CAR], motivo pelo qual seu clifor encontrava-se bloqueado no sistema ADMBR.",
-      { opcoes: [
-          "Opção 1- Embargo Isolado: Em análise às imagens de satélite verificou-se que os polígonos embargados estão devidamente isolados da área destinada ao cultivo de grãos, portanto, em conformidade.",
-          "Opção 2 - Área embargada distante da área de originação (raio mínimo de 150 km): A área indicada para análise está localizada no município/estado de [MUNICÍPIO/UF] e registrada no CAR [Nº DO CAR], encontra-se a uma distância superior a 150km da área objeto do embargo. Dessa forma, atende ao critério de mitigação de risco de triangulação previsto na política da companhia, não sendo identificados impedimentos sob esse aspecto.",
+      TX.idCarStatus, TX.carBcb, TX.carStatusPolitica,
+      { grupo: 'Operação', instrucao: 'mantenha apenas a opção que corresponde ao chamado e apague a outra.', opcoes: [
+        { rotulo: 'Opção 1 – Pedido de insumos', texto: TX.opCarInsumos },
+        { rotulo: 'Opção 2 – Contrato', texto: TX.opCarContrato },
       ] },
-      "Adicionalmente, a área indicada possui aproximadamente [ÁREA PRODUTIVA] hectares de área produtiva. Considerando o fator médio de rendimento estabelecido pela CONAB para o Estado de [UF], de [RENDIMENTO] kg/ha, a capacidade estimada de produção da área é de aproximadamente [PRODUÇÃO] kg, equivalente a [PRODUÇÃO] toneladas de grãos e [PRODUÇÃO] sacas (60kg).",
-      "No chamado foi informado que o pedido de análise e eventual desbloqueio:",
-      { opcoes: [
-          "Opção 1 – Contrato Fixo/Balcão na alçada L: tem por objetivo viabilizar a continuidade da operação referente ao contrato fixo/balcão nº [Nº DO CONTRATO], envolvendo o volume de [VOLUME DO CONTRATO]kg de [SOJA/MILHO], atualmente enquadrado na alçada L em razão do bloqueio acima mencionado/visando à geração de novo contrato.",
-          "Opção 2 - Contrato Fixo/Balcão já gerado: tem por objetivo viabilizar a continuidade da operação referente ao contrato fixo/balcão nº [Nº DO CONTRATO], envolvendo o volume de [VOLUME DO CONTRATO]kg de [SOJA/MILHO], firmado em [DATA DA GERAÇÃO], que tem como área de formação de lavoura vinculado à ele, a área registrada no CAR [INSERIR CAR].",
-          "Opção 3 – Hedge para nova compra: tem como finalidade a aplicação do hedge nº [Nº DO HEDGE], visando à geração de novo contrato no volume de [VOLUME DO HEDGE] kg de ==soja/milho==.",
-          "Opção 4 – Pedido de insumos: tem por objetivo viabilizar a continuidade da operação vinculada ao Pedido de Insumos nº [Nº DO PEDIDO], emitido em [DATA DA EMISSÃO], cuja área de entrega e/ou aplicação corresponde à área objeto da presente análise.",
+      TX.excAnterior, TX.excSemRegularizar,
+      { se: 'carStatus=Suspenso', rotulo: 'Somente para CAR “Suspenso”', texto: TX.excSuspenso },
+      TX.excChamadoAberto,
+    ],
+  },
+
+  /* ========================= C. BLOQUEIO MANTIDO ========================= */
+  {
+    id: 'c-11', categoria: 'mantido', status: 'mantido',
+    titulo: 'CASO 11 – AUSÊNCIA DE ÁREA DE CULTIVO – NOVAS NEGOCIAÇÕES',
+    quandoUsar: 'o CPF/CNPJ não tem restrições, mas as imagens de satélite não comprovam o mínimo de 10% da área destinado ao cultivo de grãos.',
+    fonte: 'Word',
+    paragrafos: [
+      TX.idCultivo, TX.cultivoSatelite,
+      { grupo: 'Operação', instrucao: 'mantenha apenas a opção que corresponde ao chamado e apague as demais.', opcoes: [
+        { rotulo: 'Opção 1 – Contrato fixo/balcão na alçada L', texto: TX.opAlcadaL },
+        { rotulo: 'Opção 2 – Hedge para nova compra', texto: TX.opHedge },
       ] },
-      "Diante do exposto, considerando que o [o produtor / a empresa] e a área objeto da presente análise encontram-se em conformidade sob a ótica socioambiental ==e que o volume negociado é compatível com a capacidade produtiva da área==, conclui‑se que não há impedimentos ambientais, motivo pelo qual o desbloqueio foi devidamente realizado.",
+      TX.conCultivo, TX.oriAreas,
     ],
   },
   {
-    id: "fav-05",
-    categoria: "favoravel",
-    subcategoria: "Operações já em andamento",
-    titulo: "CASO 5 – CASOS COM OPERAÇÕES JÁ EM ANDAMENTO (CONTRATO FIXO, HEDGE OU PEDIDO DE INSUMOS - CLIENTE SEM RESTRIÇÃO AMBIENTAL NO CPF/CNPJ E ÁREA DE ORIGINAÇÃO COM EMBARGO FEDERAL/ESTADUAL (IBAMA, ICMBio, SEMA-MT, SEMAD-GO E LDI-PA)",
-    obs: ["Realizar o cálculo pela ferramenta de Cálculo de Capacidade Produtiva (Calculadora de Capacidade Produtiva)"],
-    fonte: "Word",
-    paragrafos: [
-      "[O produtor / A empresa] [NOME / RAZÃO SOCIAL] não possui restrições ambientais vinculadas ao seu [CPF/CNPJ]. No entanto, a área indicada para análise, localizada no município/estado de [MUNICÍPIO/UF] e registrada no CAR [Nº DO CAR], encontrava-se bloqueada em razão de [MOTIVO DO BLOQUEIO].",
-      "Em análise às imagens de satélite verificou-se que os polígonos embargados estão devidamente isolados da área destinada ao cultivo de grãos, portanto, em conformidade.",
-      "Adicionalmente, a área indicada possui aproximadamente [ÁREA PRODUTIVA] hectares de área produtiva. Considerando o fator médio de rendimento estabelecido pela CONAB para o Estado de [UF], de [RENDIMENTO] kg/ha, a capacidade estimada de produção da área é de aproximadamente [PRODUÇÃO] kg, equivalente a [PRODUÇÃO] toneladas de grãos e [PRODUÇÃO] sacas (60kg).",
-      "No chamado foi informado que o pedido de análise e eventual desbloqueio:",
-      { opcoes: [
-          "Opção 1 – Contrato Fixo/Balcão na alçada L: tem por objetivo viabilizar a continuidade da operação referente ao contrato fixo/balcão nº [Nº DO CONTRATO], envolvendo o volume de [VOLUME DO CONTRATO]kg de [SOJA/MILHO], atualmente enquadrado na alçada L em razão do bloqueio acima mencionado/visando à geração de novo contrato.",
-          "Opção 2 - Contrato Fixo/Balcão já gerado: tem por objetivo viabilizar a continuidade da operação referente ao contrato fixo/balcão nº [Nº DO CONTRATO], envolvendo o volume de [VOLUME DO CONTRATO]kg de [SOJA/MILHO], firmado em [DATA DA GERAÇÃO], que tem como área de formação de lavoura vinculado à ele, a área registrada no CAR [INSERIR CAR].",
-          "Opção 3 – Hedge para nova compra: tem como finalidade a aplicação do hedge nº [Nº DO HEDGE], visando à geração de novo contrato no volume de [VOLUME DO HEDGE] kg de ==soja/milho==.",
-          "Opção 4 – Pedido de insumos: tem por objetivo viabilizar a continuidade da operação vinculada ao Pedido de Insumos nº [Nº DO PEDIDO], emitido em [DATA DA EMISSÃO], cuja área de entrega e/ou aplicação corresponde à área objeto da presente análise.",
-      ] },
-      "Diante do exposto, considerando que o [o produtor / a empresa] e a área objeto da presente análise encontram-se em conformidade sob a ótica socioambiental ==e que o volume negociado é compatível com a capacidade produtiva da área==, conclui‑se que não há impedimentos ambientais, motivo pelo qual o desbloqueio foi devidamente realizado.",
-    ],
+    id: 'c-12', categoria: 'mantido', status: 'mantido',
+    titulo: 'CASO 12 – PROTOCOLO VERDE DOS GRÃOS DO PARÁ (PVG) – RESTRIÇÃO NA ÁREA DE ORIGINAÇÃO',
+    quandoUsar: 'área no Pará com desmatamento acima do limite do PVG (25 hectares), sem apresentação de documento de regularização.',
+    obs: [OBS_CALC], fonte: 'Word',
+    paragrafos: [TX.idPvg, TX.naoApta, TX.pvgRegularizacao, TX.capPAInfo, TX.conPvg],
   },
   {
-    id: "fav-06",
-    categoria: "favoravel",
-    titulo: "CASO 6 – BLOQUEIO POR SOBREPOSIÇÃO COM TERRA INDÍGENA – STATUS DECLARADA",
-    obs: ["Realizar o cálculo pela ferramenta de Cálculo de Capacidade Produtiva (Calculadora de Capacidade Produtiva)"],
-    fonte: "Word",
-    paragrafos: [
-      "[O produtor / A empresa] [NOME / RAZÃO SOCIAL] não possui restrições ambientais vinculadas ao seu [CPF/CNPJ]. No entanto, a área indicada para análise, localizada no município/estado de [MUNICÍPIO/UF] e registrada no CAR [Nº DO CAR], encontrava-se bloqueada em razão de sobreposição parcial/integral com a Terra Indígena [NOME DA TERRA INDÍGENA], classificada com status legal “Declarada”.",
-      "De acordo com a política vigente da companhia, somente negociações envolvendo áreas sobrepostas a terras indígenas com status “Homologada” pelo Governo Federal são passíveis de bloqueio.",
-      "Dessa forma, considerando que a Terra Indígena sobreposta às áreas objeto da presente análise possui status legal “Declarada”, conclui-se que, até o momento, as áreas permanecem em conformidade com os critérios socioambientais estabelecidos pela companhia.",
-      "Contudo, recomenda-se o monitoramento contínuo do cliente/fornecedor, a fim de identificar e reportar eventuais avanços no processo de demarcação da referida terra indígena.",
-      "Adicionalmente, a área indicada possui aproximadamente [ÁREA PRODUTIVA] hectares de área produtiva. Considerando o fator médio de rendimento estabelecido pela CONAB para o Estado de [UF], de [RENDIMENTO] kg/ha, a capacidade estimada de produção da área é de aproximadamente [PRODUÇÃO] kg, equivalente a [PRODUÇÃO] toneladas de grãos e [PRODUÇÃO] sacas (60kg).",
-      "No chamado foi informado que o pedido de análise e eventual desbloqueio:",
-      { opcoes: [
-          "Opção 1 – Contrato Fixo/Balcão na alçada L: tem por objetivo viabilizar a continuidade da operação referente ao contrato fixo/balcão nº [Nº DO CONTRATO], envolvendo o volume de [VOLUME DO CONTRATO]kg de [SOJA/MILHO], atualmente enquadrado na alçada L em razão do bloqueio acima mencionado/visando à geração de novo contrato.",
-          "Opção 2 - Contrato Fixo/Balcão já gerado: tem por objetivo viabilizar a continuidade da operação referente ao contrato fixo/balcão nº [Nº DO CONTRATO], envolvendo o volume de [VOLUME DO CONTRATO]kg de [SOJA/MILHO], firmado em [DATA DA GERAÇÃO], que tem como área de formação de lavoura vinculado à ele, a área registrada no CAR [INSERIR CAR].",
-          "Opção 3 – Hedge para nova compra: tem como finalidade a aplicação do hedge nº [Nº DO HEDGE], visando à geração de novo contrato no volume de [VOLUME DO HEDGE] kg de ==soja/milho==.",
-          "Opção 4 – Pedido de insumos: tem por objetivo viabilizar a continuidade da operação vinculada ao Pedido de Insumos nº [Nº DO PEDIDO], emitido em [DATA DA EMISSÃO], cuja área de entrega e/ou aplicação corresponde à área objeto da presente análise.",
-      ] },
-      "Diante do exposto, considerando que o [o produtor / a empresa] e a área objeto da presente análise encontram-se em conformidade sob a ótica socioambiental ==e que o volume negociado é compatível com a capacidade produtiva da área==, conclui‑se que não há impedimentos ambientais, motivo pelo qual o desbloqueio foi devidamente realizado.",
-    ],
+    id: 'c-13', categoria: 'mantido', status: 'mantido',
+    titulo: 'CASO 13 – PROTOCOLO VERDE DOS GRÃOS DO PARÁ (PVG) – LICENCIAMENTO AMBIENTAL RURAL (LAR) VENCIDO',
+    quandoUsar: 'mesma restrição do Caso 12, mas o cliente apresentou LAR vencido, sem protocolo de renovação ou com protocolo fora do prazo legal de 120 dias.',
+    obs: [OBS_CALC], fonte: 'Word',
+    paragrafos: [TX.idPvg, TX.naoApta, TX.larVencido, TX.lar120, TX.larEficacia, TX.larSancoes, TX.capPAInfo, TX.conLarVencido],
   },
   {
-    id: "fav-07",
-    categoria: "favoravel",
-    titulo: "CASO 7 – BLOQUEIO POR APONTAMENTO DE EMBARGOS EM ÁREA DE ASSENTAMENTO",
-    obs: ["Realizar o cálculo pela ferramenta de Cálculo de Capacidade Produtiva (Calculadora de Capacidade Produtiva)"],
-    fonte: "Word",
-    paragrafos: [
-      "[O produtor / A empresa] [NOME / RAZÃO SOCIAL] não possui restrições ambientais vinculadas ao seu [CPF/CNPJ]. No entanto, a área indicada para análise, localizada no município/estado de [MUNICÍPIO/UF] e registrada no CAR [Nº DO CAR], encontrava-se bloqueada em razão do risco de triangulação com áreas embargadas pelo ==**Ibama e pela Sema‑MT==**, vinculadas ao CAR [Nº DO CAR].",
-      "O CAR [Nº DO CAR] corresponde a uma área de assentamento, dentro da qual o CAR do cliente está inserido. Assim, o bloqueio identificado decorre exclusivamente de passivos ambientais pertencentes a terceiros, associados ao assentamento, e não ao cliente ou de sua área específica.",
-      "Adicionalmente, a área indicada possui aproximadamente [ÁREA PRODUTIVA] hectares de área produtiva. Considerando o fator médio de rendimento estabelecido pela CONAB para o Estado de [UF], de [RENDIMENTO] kg/ha, a capacidade estimada de produção da área é de aproximadamente [PRODUÇÃO] kg, equivalente a [PRODUÇÃO] toneladas de grãos e [PRODUÇÃO] sacas (60kg).",
-      "No chamado foi informado que o pedido de análise e eventual desbloqueio:",
-      { opcoes: [
-          "Opção 1 – Contrato Fixo/Balcão na alçada L: tem por objetivo viabilizar a continuidade da operação referente ao contrato fixo/balcão nº [Nº DO CONTRATO], envolvendo o volume de [VOLUME DO CONTRATO]kg de [SOJA/MILHO], atualmente enquadrado na alçada L em razão do bloqueio acima mencionado/visando à geração de novo contrato.",
-          "Opção 2 - Contrato Fixo/Balcão já gerado: tem por objetivo viabilizar a continuidade da operação referente ao contrato fixo/balcão nº [Nº DO CONTRATO], envolvendo o volume de [VOLUME DO CONTRATO]kg de [SOJA/MILHO], firmado em [DATA DA GERAÇÃO], que tem como área de formação de lavoura vinculado à ele, a área registrada no CAR [INSERIR CAR].",
-          "Opção 3 – Hedge para nova compra: tem como finalidade a aplicação do hedge nº [Nº DO HEDGE], visando à geração de novo contrato no volume de [VOLUME DO HEDGE] kg de ==soja/milho==.",
-          "Opção 4 – Pedido de insumos: tem por objetivo viabilizar a continuidade da operação vinculada ao Pedido de Insumos nº [Nº DO PEDIDO], emitido em [DATA DA EMISSÃO], cuja área de entrega e/ou aplicação corresponde à área objeto da presente análise.",
-      ] },
-      "Diante do exposto, considerando que o [o produtor / a empresa] e a área objeto da presente análise encontram-se em conformidade sob a ótica socioambiental ==e que o volume negociado é compatível com a capacidade produtiva da área==, conclui‑se que não há impedimentos ambientais, motivo pelo qual o desbloqueio foi devidamente realizado.",
-    ],
+    id: 'c-14', categoria: 'mantido', status: 'mantido',
+    titulo: 'CASO 14 – PRODES 2025 – DESMATAMENTO SOBREPOSTO À CAMADA DE SOJA',
+    quandoUsar: 'a área apresenta desmatamento identificado no PRODES/INPE sobreposto à camada de soja. A restrição decorre de política global da ADM e não pode ser regularizada com documentos.',
+    fonte: 'Word',
+    paragrafos: [TX.prodesDiretriz, TX.prodesPolitica, TX.prodesSemRegularizacao, TX.conProdes],
   },
   {
-    id: "fav-08",
-    categoria: "favoravel",
-    titulo: "CASO 8 – BLOQUEIO POR RESTRIÇÃO ASSOCIADA AO PROTOCOLO VERDE DOS GRÃOS DO PARÁ (PVG) – DESMATAMENTO SUPERIOR AO PERMITIDO (25HA)",
-    obs: ["Realizar o cálculo pela ferramenta de Cálculo de Capacidade Produtiva (Calculadora de Capacidade Produtiva)"],
-    fonte: "Word",
+    id: 'c-nova-area', categoria: 'mantido', status: 'mantido',
+    titulo: 'EMBARGO FEDERAL/ESTADUAL EM NOVA ÁREA INDICADA – DIVERSA DA ÁREA VINCULADA NA OPERAÇÃO – NÃO ISOLADO DA ÁREA DE CULTIVO',
+    quandoUsar: 'foi indicada uma nova área (diferente da vinculada à operação) e o embargo dessa área não está isolado do cultivo, com indícios de plantio na última safra dentro da área embargada.',
+    fonte: 'Trechos fundamentados',
     paragrafos: [
-      "[O produtor / A empresa] [NOME / RAZÃO SOCIAL] possui restrição ambiental vinculada ao seu [CPF/CNPJ] junto ao Protocolo Verde dos Grãos do Pará (PVG) decorrentes de desmatamento acima dos limites permitidos (25 hectares), incidentes sobre área localizada no município de [MUNICÍPIO/UF] e registrada no CAR nº [Nº DO CAR].",
-      "Para regularizar referido passivo é necessário apresentar o Licenciamento Ambiental Rural (LAR) válido e/ou Plano de Recuperação de Áreas Degradadas (PRAD) elaborado por profissional habilitado e devidamente protocolo junto ao órgão ambiental competente.",
-      "No presente chamado foi apresentado Licenciamento Ambiental Rural (LAR) nº [Nº DO DOCUMENTO], com validade até [DATA], que autoriza o desenvolvimento de atividades agrícolas de culturas de ciclo curto, incluindo soja, milho e demais culturas anuais.",
-      "Assim, a área encontra-se regularizada do ponto de vista ambiental e apta para operações comerciais.",
-      "Adicionalmente, a área indicada possui aproximadamente [ÁREA PRODUTIVA] hectares de área produtiva. Considerando o fator médio de rendimento estabelecido pela CONAB para o Estado de [UF], de [RENDIMENTO] kg/ha, a capacidade estimada de produção da área é de aproximadamente [PRODUÇÃO] kg, equivalente a [PRODUÇÃO] toneladas de grãos e [PRODUÇÃO] sacas (60kg).",
-      "No chamado foi informado que o pedido de análise e eventual desbloqueio:",
-      { opcoes: [
-          "Opção 1 – Contrato Fixo/Balcão na alçada L: tem por objetivo viabilizar a continuidade da operação referente ao contrato fixo/balcão nº [Nº DO CONTRATO], envolvendo o volume de [VOLUME DO CONTRATO]kg de [SOJA/MILHO], atualmente enquadrado na alçada L em razão do bloqueio acima mencionado/visando à geração de novo contrato.",
-          "Opção 2 - Contrato Fixo/Balcão já gerado: tem por objetivo viabilizar a continuidade da operação referente ao contrato fixo/balcão nº [Nº DO CONTRATO], envolvendo o volume de [VOLUME DO CONTRATO]kg de [SOJA/MILHO], firmado em [DATA DA GERAÇÃO], que tem como área de formação de lavoura vinculado à ele, a área registrada no CAR [INSERIR CAR].",
-          "Opção 3 – Hedge para nova compra: tem como finalidade a aplicação do hedge nº [Nº DO HEDGE], visando à geração de novo contrato no volume de [VOLUME DO HEDGE] kg de ==soja/milho==.",
-          "Opção 4 – Pedido de insumos: tem por objetivo viabilizar a continuidade da operação vinculada ao Pedido de Insumos nº [Nº DO PEDIDO], emitido em [DATA DA EMISSÃO], cuja área de entrega e/ou aplicação corresponde à área objeto da presente análise.",
-      ] },
-      "Diante do exposto, considerando que [o produtor / a empresa]  e a área objeto da presente análise encontram-se em conformidade sob a ótica socioambiental comprovada por licenciamento vigente ==e que o volume negociado é plenamente compatível com sua capacidade produtiva estimada==, conclui-se que não existem impedimentos ambientais para a operação, motivo pelo qual o desbloqueio foi realizado.",
+      { opcional: 'Identificação e situação da área (texto do Caso 3)', texto: TX.idEmbargoArea, incluido: true },
+      TX.novaArea1, TX.novaArea2, TX.novaArea3, TX.novaArea4, TX.novaArea5, TX.novaArea6, TX.novaArea7, TX.novaArea8, TX.novaArea9,
     ],
   },
+
+  /* ============== D. PROCEDIMENTOS OPERACIONAIS E CADASTRAIS ============== */
   {
-    id: "exc-09a",
-    categoria: "excepcional",
-    titulo: "CASO 9 – RESTRIÇÃO AMBIENTAL COMO EMBARGO FEDERAL/ESTADUAL – PVG – AUSÊNCIA DE ÁREA DE CULTIVO – PRODES 2025",
-    obs: ["Utilizar as informações padrões de identificação do cliente, situação da área, fundamentação da exceção, capacidade produtiva e descrição da operação em andamento. Após a contextualização, utilizar os modelos abaixo:"],
-    fonte: "Word",
-    paragrafos: [
-      "Conforme informado no chamado, o pedido de desbloqueio tem por objetivo viabilizar a continuidade da operação vinculada ao contrato fixo/balcão nº [Nº DO CONTRATO], envolvendo o volume de [VOLUME DO CONTRATO] kg de [SOJA/MILHO], firmado em [DATA DA GERAÇÃO], cuja área de formação de lavoura está vinculada ao CAR [INSERIR CAR].",
-      "Considerando que a operação já foi formalizada e se encontra em fase de execução e cumprimento contratual, o desbloqueio será concedido em caráter excepcional e pontual, exclusivamente para permitir a conclusão da operação já existente, não constituindo autorização para a formalização de novos negócios vinculados à área em questão.",
-      "",
-      "Ressalta-se que eventuais novas negociações, contratações ou operações envolvendo o cliente e/ou a área objeto desta análise permanecem vedadas e não contam com a anuência da equipe de Sustentabilidade.",
-      "Dessa forma, solicita-se que, após o integral cumprimento do contrato nº [Nº DO CONTRATO] ou do Pedido de Insumos nº [Nº DO PEDIDO], a equipe responsável comunique a conclusão da operação para que o bloqueio seja restabelecido no sistema, mitigando o risco de formalização de novas negociações sem a devida avaliação socioambiental.",
-    ],
+    id: 'd-washout', categoria: 'procedimento', status: 'desbloqueio',
+    titulo: 'OPERAÇÕES ENVOLVENDO CONTRATAÇÃO DE VOLUME OU WASHOUT DE ALGODÃO – DESBLOQUEIO SEM ANÁLISE SOCIOAMBIENTAL',
+    quandoUsar: 'o chamado pede desbloqueio para operação de washout ou contratação de volume de algodão, que não passa pela análise socioambiental.',
+    fonte: 'Trechos fundamentados',
+    paragrafos: [TX.washout1, TX.washout2, TX.washout3, TX.washout4],
   },
   {
-    id: "exc-09b",
-    categoria: "excepcional",
-    titulo: "CASO 9 – STATUS CAR “Suspenso” ou “Cancelado”",
-    obs: ["Utilizar as informações padrões de identificação do cliente, situação da área, fundamentação da exceção, capacidade produtiva e descrição da operação em andamento. Após a contextualização, utilizar os modelos abaixo:"],
-    fonte: "Word",
+    id: 'd-reenquadramento', categoria: 'procedimento', status: 'reclassificacao',
+    titulo: 'REENQUADRAMENTO DE CLIENTE DIRETO PARA INDIRETO',
+    quandoUsar: 'empresa cadastrada como cliente DIRETO cuja atividade (CNAE principal e secundárias) indica perfil de cliente INDIRETO.',
+    obs: ['Os parágrafos “Se for o caso inserir” estão no painel “Dados do caso”, em Opções do texto.'],
+    fonte: 'Trechos fundamentados',
+    padroes: { tipoPessoa: 'PJ' },
     paragrafos: [
-      "[O produtor / A empresa] [NOME / RAZÃO SOCIAL] não possui restrições ambientais vinculadas ao seu [CPF/CNPJ]. No entanto, a área indicada para análise, localizada no município/estado de [MUNICÍPIO/UF] e registrada no CAR [Nº DO CAR], encontrava-se bloqueada em razão de constar com status \"Suspenso\" / “Cancelado”.",
-      "Tal condição encontra-se em desacordo com as diretrizes estabelecidas pela política interna da ADM, bem como com a Resolução BCB nº 140/2021, que dispõe sobre impedimentos e restrições aplicáveis à concessão de crédito rural para imóveis que apresentem pendências ou irregularidades de natureza socioambiental.",
-      "Conforme os critérios internos vigentes, somente imóveis cadastrados no CAR com status \"Ativo\" ou \"Pendente\" podem ser vinculados a contratos e operações comerciais. Consequentemente, imóveis classificados com status \"Suspenso\" ou \"Cancelado\" não são elegíveis para vinculação a negociações ou contratação de operações.",
-      "Conforme informado no chamado, o pedido de desbloqueio tem por objetivo viabilizar a continuidade da operação relacionada ao ",
-      { opcoes: [
-          "Opção 1 – Pedido de Insumos: Pedido de insumos nº [INSERIR Nº], emitido em [DATA], cuja entrega está prevista para a Fazenda [NOME DA FAZENDA], localizada em [MUNICÍPIO/UF].",
-          "Opção 2 – Contrato: cumprimento do contratos fixo nº [INSERIR Nº], firmados em [DATA], referentes ao volume total de [VOLUME] kg de ==SOJA/MILHO==, o qual possuí vinculada como área de formação de lavoura o imóvel registrado no CAR [Nº DO CAR], localizado em [MUNICÍPIO/UF].",
-      ] },
-      "Diante do exposto, considerando que a operação foi formalizada anteriormente ao apontamento que ensejou o bloqueio da área, presume-se que, à época da emissão do pedido, o imóvel atendia aos requisitos de elegibilidade então exigidos.",
-      "Dessa forma, o desbloqueio será realizado em caráter excepcional e exclusivamente para possibilitar o cumprimento da operação já contratada, sem que isso represente regularização da restrição atualmente existente.",
-      "",
-      "==**EM CASO DO CAR SUSPENSO:==** Ressalta-se que não estão autorizadas novas negociações, contratações ou vinculações envolvendo a área em questão enquanto o status do CAR permanecer \"Suspenso\", sendo necessária a regularização cadastral para restabelecimento de sua elegibilidade perante os critérios socioambientais aplicáveis.",
-      "Por fim, este chamado permanecerá aberto. Solicita-se que, após a conclusão da operação vinculada ao Pedido de Insumos/Contrato nº [INSERIR Nº], nos comunique sobre o encerramento da entrega, para que o bloqueio da área seja restabelecido.",
+      TX.reenqId, TX.reenq2,
+      { opcional: 'Se for o caso: CNPJ sem restrições – impedimento pela ausência de CAR', texto: TX.reenqSemCar },
+      { opcional: 'Se for o caso: finalidade – operação com farelo de soja', texto: TX.reenqFarelo },
+      TX.reenq3, TX.reenq4,
     ],
   },
+
+  /* ============================ MODELO-BASE ============================ */
   {
-    id: "blq-01",
-    categoria: "mantido",
-    titulo: "CASO 1 – AUSÊNCIA DE ÁREA DE CULTIVO – NOVAS NEGOCIAÇÕES – BLOQUEIO MANTIDO",
-    quandoUsar: "o CPF/CNPJ não tem restrições, mas a análise das imagens de satélite não comprova o mínimo de 10% da área destinado ao cultivo de grãos, e o desbloqueio é pedido para viabilizar uma operação.",
-    fonte: "Word",
+    id: 'base', categoria: 'base', status: '',
+    titulo: '4. MODELO-BASE PARA CASOS NÃO PREVISTOS',
+    quandoUsar: 'marque o status no cabeçalho e preencha cada bloco na ordem da estrutura padrão (seção 2). Fundamentação e orientação devem ser redigidas conforme o caso concreto.',
+    fonte: 'Word',
     paragrafos: [
-      "[O produtor / A empresa] [NOME / RAZÃO SOCIAL] não possui restrições ambientais vinculadas ao seu [CPF/CNPJ]. No entanto, a área indicada para análise, localizada no município de [MUNICÍPIO/UF] e registrada no CAR nº [Nº DO CAR], encontra-se bloqueada em razão da ausência de comprovação de que, no mínimo, 10% (dez por cento) da área destinada ao cultivo de grãos.",
-      "Conforme análise das imagens de satélite, foi constatado que a propriedade não apresenta áreas de cultivo de grãos. Dessa forma, conclui-se que eventual volume de grãos negociado não poderia ter a referida área como origem ou como área de formação de lavoura.",
-      "No chamado foi informado que o pedido de análise e eventual desbloqueio:",
-      { opcoes: [
-          "Opção 1 – Contrato Fixo/Balcão na alçada L: tem por objetivo viabilizar a continuidade da operação referente ao contrato fixo/balcão nº [Nº DO CONTRATO], envolvendo o volume de [VOLUME DO CONTRATO]kg de [SOJA/MILHO], atualmente enquadrado na alçada L em razão do bloqueio acima mencionado/visando à geração de novo contrato.",
-          "Opção 2 – Hedge para nova compra: tem como finalidade a aplicação do hedge nº [Nº DO HEDGE], visando à geração de novo contrato no volume de [VOLUME DO HEDGE] kg de soja/milho.",
-      ] },
-      "Diante do exposto, considerando que a análise das imagens de satélite confirmou a inexistência de áreas de cultivo de grãos na propriedade objeto desta avaliação, o que impossibilita seu enquadramento como área de formação de lavoura, e considerando, ainda, que o desbloqueio solicitado visa à [continuidade da operação acima referida / formalização de nova operação], **o bloqueio deverá ser mantido.**",
-      "Assim, orienta-se a apresentação de outras áreas de originação para análise, de modo que o volume negociado e a ser recebido pela companhia esteja devidamente respaldado por capacidade produtiva e regularidade socioambiental compatíveis com o montante da operação.",
-    ],
-  },
-  {
-    id: "blq-03",
-    categoria: "mantido",
-    titulo: "CASO 3 – PROTOCOLO VERDE DOS GRÃOS DO PARÁ – RESTRIÇÃO NA ÁREA DE ORIGINAÇÃO – BLOQUEIO MANTIDO",
-    quandoUsar: "área no Pará com desmatamento acima do limite do PVG (25 hectares), sem apresentação de documento de regularização.",
-    fonte: "Word",
-    paragrafos: [
-      "[O produtor / A empresa] [NOME / RAZÃO SOCIAL] ([CPF/CNPJ] nº [NÚMERO]) possui restrições associadas ao Protocolo Verde dos Grãos do Pará (PVG), em decorrência de desmatamento superior ao limite permitido (25 hectares) na própria área indicada para análise, localizada no município de [MUNICÍPIO]/PA e registrada no CAR nº [Nº DO CAR], conforme Relatório de Conformidade Ambiental anexo.",
-      "Dessa forma, a área em análise não atende aos critérios de compliance socioambiental e, consequentemente, não está apta a ser vinculada a qualquer operação.",
-      "Para a regularização do referido passivo, é necessário apresentar o Licenciamento Ambiental Rural (LAR) válida e/ou o Plano de Recuperação de Áreas Degradadas (PRAD) elaborado por profissional habilitado e devidamente protocolado junto ao órgão ambiental competente.",
-      "A título de informação, a área possui aproximadamente [ÁREA PRODUTIVA] hectares de área produtiva. Considerando o rendimento médio de [RENDIMENTO] kg/ha estabelecido pela CONAB para o Estado do Pará na safra [SAFRA], estima-se uma capacidade produtiva de aproximadamente [PRODUÇÃO] kg, equivalente a [PRODUÇÃO] toneladas de grãos.",
-      "Diante do exposto, verifica-se que a área em análise não está em conformidade socioambiental para negociações. Assim, **o bloqueio será mantido, não sendo recomendadas negociações [[com este produtor / com esta empresa]], nesta área ou em áreas que não respeitem o raio de triangulação de 150km previsto na política da companhia.**",
-    ],
-  },
-  {
-    id: "blq-04",
-    categoria: "mantido",
-    titulo: "CASO 4 – PROTOCOLO VERDE DOS GRÃOS DO PARÁ – LICENÇA DE ATIVIDADE RURAL (LAR) VENCIDO – BLOQUEIO MANTIDO",
-    quandoUsar: "mesma restrição do Caso 3, mas o cliente apresentou uma LAR vencida, sem protocolo de renovação ou com protocolo fora do prazo legal de 120 dias.",
-    fonte: "Word",
-    paragrafos: [
-      "[O produtor / A empresa] [NOME / RAZÃO SOCIAL] ([CPF/CNPJ] nº [NÚMERO]) possui restrições associadas ao Protocolo Verde dos Grãos do Pará (PVG), em decorrência de desmatamento superior ao limite permitido (25 hectares) na própria área indicada para análise, localizada no município de [MUNICÍPIO]/PA e registrada no CAR nº [Nº DO CAR], conforme Relatório de Conformidade Ambiental anexo.",
-      "Dessa forma, a área em análise não atende aos critérios de compliance socioambiental e, consequentemente, não está apta a ser vinculada a qualquer operação.",
-      "Com o intuito de regularizar o referido passivo, foi apresentada o Licenciamento Ambiental Rural nº [Nº DA LAR]; todavia, o documento encontra-se vencido desde [DATA DE VENCIMENTO]. [Não foi apresentado protocolo de renovação da licença. / O protocolo de renovação foi realizado em DATA DO PROTOCOLO, fora do prazo legal.]",
-      "Para que o LAR seja considerado válido e tenha sua eficácia prorrogada após o vencimento, o requerimento de renovação deve ter sido protocolado junto ao órgão ambiental competente com antecedência mínima de 120 (cento e vinte) dias da data de expiração da licença, conforme dispõem o art. 14, § 4º, da Lei Complementar Federal nº 140/2011 e o art. 18, § 4º, da Resolução CONAMA nº 237/1997.",
-      "Por conseguinte, caso o protocolo de renovação tenha sido realizado fora do prazo estabelecido ou após a data de expiração da licença, opera-se a perda de eficácia do ato administrativo, não havendo prorrogação automática.",
-      "Nesses casos, a atividade passa a ser exercida sem o devido licenciamento, sujeitando o empreendedor às sanções administrativas cabíveis, uma vez que o protocolo extemporâneo (fora do prazo) não tem o condão de restabelecer a validade da licença vencida.",
-      "A título de informação, a área possui aproximadamente [ÁREA PRODUTIVA] hectares de área produtiva. Considerando o rendimento médio de [RENDIMENTO] kg/ha estabelecido pela CONAB para o Estado do Pará na safra [SAFRA], estima-se uma capacidade produtiva de aproximadamente [PRODUÇÃO] kg, equivalente a [PRODUÇÃO] toneladas de grãos.",
-      "Diante do exposto, considerando a existência da restrição ambiental apontada e a ausência de documento válido para sua regularização, **o bloqueio será mantido, não sendo recomendadas negociações [[com este produtor / com esta empresa]], nesta área ou em áreas que não respeitem o raio de triangulação de 150 km previsto na política da companhia.**",
-    ],
-  },
-  {
-    id: "blq-05",
-    categoria: "mantido",
-    titulo: "CASO 5 – PRODES 2025 – DESMATAMENTO SOBREPOSTO À CAMADA DE SOJA – BLOQUEIO MANTIDO",
-    quandoUsar: "o CPF/CNPJ não tem restrições, mas a área apresenta desmatamento identificado no PRODES/INPE sobreposto à camada de soja. A restrição decorre de política interna da ADM e não pode ser regularizada com documentos.",
-    fonte: "Word",
-    paragrafos: [
-      "[O produtor / A empresa] [NOME / RAZÃO SOCIAL] ([CPF/CNPJ] nº [NÚMERO]) não possui restrições ambientais vinculadas ao seu [CPF/CNPJ]. No entanto, as áreas indicadas para análise, localizadas no(s) município(s) de [MUNICÍPIO/UF] e registradas nos CARs nº [Nº DOS CARs], encontram-se atualmente bloqueadas em razão da identificação, na base PRODES/INPE, de desmatamento sobreposto à camada de soja, !!com ocorrência em período posterior a 2025!!.",
-      "Conforme diretriz estabelecida pela Diretoria de Sustentabilidade da ADM, imóveis que apresentem registros dessa natureza devem ser automaticamente classificados como restritos para fins de vinculação a operações comerciais, independentemente de sua situação perante a legislação ambiental vigente.",
-      "É importante destacar que esse critério decorre de uma Política Global da ADM, não constituindo exigência legal nem obrigação prevista em acordos setoriais. Trata-se de compromisso voluntariamente assumido pela companhia como parte de sua estratégia de sustentabilidade e de gestão de riscos socioambientais.",
-      "Em razão desse enquadramento, não há previsão de regularização da restrição mediante a simples apresentação de documentação complementar, uma vez que o impedimento está vinculado ao atendimento das diretrizes corporativas internas da companhia.",
-      "Dessa forma, considerando que as áreas objeto da presente análise não atendem aos critérios de conformidade socioambiental atualmente adotados pela ADM, **o bloqueio será mantido**, não sendo recomendada sua vinculação a qualquer tipo de operação comercial, incluindo a comercialização de grãos, operações de originação ou negociações envolvendo insumos.",
-    ],
-  },
-  {
-    id: "base-01",
-    categoria: "base",
-    titulo: "4. MODELO-BASE PARA CASOS NÃO PREVISTOS",
-    quandoUsar: "preencha cada bloco na ordem da estrutura padrão (seção 2). Os parágrafos de fundamentação e orientação devem ser redigidos de acordo com o caso concreto.",
-    fonte: "Word",
-    paragrafos: [
-      { rotulo: "1 e 2 – Identificação e situação da área" },
-      "[O produtor / A empresa] [NOME / RAZÃO SOCIAL] ([CPF/CNPJ] nº [NÚMERO]) [não possui / possui] restrições ambientais vinculadas ao seu [CPF/CNPJ]. [Da mesma forma / No entanto], a área indicada para análise, localizada no município de [MUNICÍPIO/UF] e registrada no CAR nº [Nº DO CAR], [não apresenta passivos ou bloqueios ambientais / encontra-se bloqueada em razão de MOTIVO DO BLOQUEIO], conforme Relatório de Conformidade Ambiental anexo.",
-      { rotulo: "3 – Fundamentação" },
-      "[Descrever a análise realizada (imagens de satélite, bases consultadas, documentos apresentados) e citar a norma, o protocolo ou a política que fundamenta a conclusão.]",
-      { rotulo: "4 – Capacidade produtiva (quando aplicável)" },
-      "[Adicionalmente / A título de informação], a área possui aproximadamente [ÁREA PRODUTIVA] hectares de área produtiva. Considerando o rendimento médio de [RENDIMENTO] kg/ha estabelecido pela CONAB para o Estado de [UF] na safra [SAFRA], estima-se uma capacidade produtiva de aproximadamente [PRODUÇÃO] kg, equivalente a [PRODUÇÃO] toneladas de grãos.",
-      { rotulo: "5 – Conclusão" },
-      "Diante do exposto, [conclui-se que tanto o produtor / a empresa quanto a área objeto da presente análise encontram-se em conformidade sob a ótica socioambiental, não tendo sido identificados impedimentos à realização de negociações / considerando MOTIVO, o bloqueio será mantido, não sendo recomendadas negociações com este produtor / com esta empresa nesta área].",
-      { rotulo: "6 – Orientação" },
-      "[Assim, orienta-se a apresentação de DOCUMENTO OU INFORMAÇÃO NECESSÁRIA / Ressalta-se a importância de CUIDADO A SER OBSERVADO NA OPERAÇÃO].",
+      { rotulo: '1 e 2 – Identificação e situação da área', bloco: 1 }, TX.idBase,
+      { rotulo: '3 – Fundamentação', bloco: 3 }, TX.fundBase,
+      { rotulo: '4 – Capacidade produtiva (quando aplicável)', bloco: 4 }, TX.capBase,
+      { rotulo: '5 – Operação (quando houver)', bloco: 5 }, TX.opBase,
+      { rotulo: '6 – Conclusão', bloco: 6 }, TX.conBase,
+      { rotulo: '7 – Orientação', bloco: 7 }, TX.oriBase,
     ],
   },
 ];
 
-/* Trechos reutilizáveis (copiados dos modelos; "fonte" indica a origem).
-   Um trecho pode ter "texto" (um parágrafo) ou "paragrafos" (vários, no mesmo
-   formato dos MODELOS — inclusive { rotulo: "…" }, que não sai no parecer). */
+/* =====================================================================
+   TRECHOS REUTILIZÁVEIS (painel à direita do Editor)
+   "blocos": em quais blocos da estrutura padrão o trecho se encaixa (1 a 7).
+   "categoria" (opcional): agrupamento próprio; sem ela, o trecho aparece
+   sob o nome do primeiro bloco. Um trecho tem "texto" (um parágrafo) ou
+   "paragrafos" (vários, no mesmo formato dos MODELOS).
+   ===================================================================== */
 const TRECHOS = [
-  { id: "base-completo", categoria: "Modelo-base (estrutura padrão)", titulo: "Modelo-base completo – blocos 1 a 6", fonte: "Modelo-base (seção 4 do Word)",
-    paragrafos: [
-      { rotulo: "1 e 2 – Identificação e situação da área" },
-      "[O produtor / A empresa] [NOME / RAZÃO SOCIAL] ([CPF/CNPJ] nº [NÚMERO]) [não possui / possui] restrições ambientais vinculadas ao seu [CPF/CNPJ]. [Da mesma forma / No entanto], a área indicada para análise, localizada no município de [MUNICÍPIO/UF] e registrada no CAR nº [Nº DO CAR], [não apresenta passivos ou bloqueios ambientais / encontra-se bloqueada em razão de MOTIVO DO BLOQUEIO], conforme Relatório de Conformidade Ambiental anexo.",
-      { rotulo: "3 – Fundamentação" },
-      "[Descrever a análise realizada (imagens de satélite, bases consultadas, documentos apresentados) e citar a norma, o protocolo ou a política que fundamenta a conclusão.]",
-      { rotulo: "4 – Capacidade produtiva (quando aplicável)" },
-      "[Adicionalmente / A título de informação], a área possui aproximadamente [ÁREA PRODUTIVA] hectares de área produtiva. Considerando o rendimento médio de [RENDIMENTO] kg/ha estabelecido pela CONAB para o Estado de [UF] na safra [SAFRA], estima-se uma capacidade produtiva de aproximadamente [PRODUÇÃO] kg, equivalente a [PRODUÇÃO] toneladas de grãos.",
-      { rotulo: "5 – Conclusão" },
-      "Diante do exposto, [conclui-se que tanto o produtor / a empresa quanto a área objeto da presente análise encontram-se em conformidade sob a ótica socioambiental, não tendo sido identificados impedimentos à realização de negociações / considerando MOTIVO, o bloqueio será mantido, não sendo recomendadas negociações com este produtor / com esta empresa nesta área].",
-      { rotulo: "6 – Orientação" },
-      "[Assim, orienta-se a apresentação de DOCUMENTO OU INFORMAÇÃO NECESSÁRIA / Ressalta-se a importância de CUIDADO A SER OBSERVADO NA OPERAÇÃO].",
-    ] },
-  { id: "base-1e2", categoria: "Modelo-base (estrutura padrão)", titulo: "1 e 2 – Identificação e situação da área", fonte: "Modelo-base (seção 4 do Word)",
-    texto: "[O produtor / A empresa] [NOME / RAZÃO SOCIAL] ([CPF/CNPJ] nº [NÚMERO]) [não possui / possui] restrições ambientais vinculadas ao seu [CPF/CNPJ]. [Da mesma forma / No entanto], a área indicada para análise, localizada no município de [MUNICÍPIO/UF] e registrada no CAR nº [Nº DO CAR], [não apresenta passivos ou bloqueios ambientais / encontra-se bloqueada em razão de MOTIVO DO BLOQUEIO], conforme Relatório de Conformidade Ambiental anexo." },
-  { id: "base-3", categoria: "Modelo-base (estrutura padrão)", titulo: "3 – Fundamentação", fonte: "Modelo-base (seção 4 do Word)",
-    texto: "[Descrever a análise realizada (imagens de satélite, bases consultadas, documentos apresentados) e citar a norma, o protocolo ou a política que fundamenta a conclusão.]" },
-  { id: "base-4", categoria: "Modelo-base (estrutura padrão)", titulo: "4 – Capacidade produtiva (quando aplicável)", fonte: "Modelo-base (seção 4 do Word)",
-    texto: "[Adicionalmente / A título de informação], a área possui aproximadamente [ÁREA PRODUTIVA] hectares de área produtiva. Considerando o rendimento médio de [RENDIMENTO] kg/ha estabelecido pela CONAB para o Estado de [UF] na safra [SAFRA], estima-se uma capacidade produtiva de aproximadamente [PRODUÇÃO] kg, equivalente a [PRODUÇÃO] toneladas de grãos." },
-  { id: "base-5", categoria: "Modelo-base (estrutura padrão)", titulo: "5 – Conclusão", fonte: "Modelo-base (seção 4 do Word)",
-    texto: "Diante do exposto, [conclui-se que tanto o produtor / a empresa quanto a área objeto da presente análise encontram-se em conformidade sob a ótica socioambiental, não tendo sido identificados impedimentos à realização de negociações / considerando MOTIVO, o bloqueio será mantido, não sendo recomendadas negociações com este produtor / com esta empresa nesta área]." },
-  { id: "base-6", categoria: "Modelo-base (estrutura padrão)", titulo: "6 – Orientação", fonte: "Modelo-base (seção 4 do Word)",
-    texto: "[Assim, orienta-se a apresentação de DOCUMENTO OU INFORMAÇÃO NECESSÁRIA / Ressalta-se a importância de CUIDADO A SER OBSERVADO NA OPERAÇÃO]." },
-  { id: "cap-fav", categoria: "Capacidade produtiva", titulo: "Capacidade produtiva – com sacas (casos favoráveis)", fonte: "A – Casos 2 a 8",
-    texto: "Adicionalmente, a área indicada possui aproximadamente [ÁREA PRODUTIVA] hectares de área produtiva. Considerando o fator médio de rendimento estabelecido pela CONAB para o Estado de [UF], de [RENDIMENTO] kg/ha, a capacidade estimada de produção da área é de aproximadamente [PRODUÇÃO] kg, equivalente a [PRODUÇÃO] toneladas de grãos e [PRODUÇÃO] sacas (60kg)." },
-  { id: "cap-pa", categoria: "Capacidade produtiva", titulo: "Capacidade produtiva – Pará, com safra (bloqueio mantido)", fonte: "C – Casos 3 e 4",
-    texto: "A título de informação, a área possui aproximadamente [ÁREA PRODUTIVA] hectares de área produtiva. Considerando o rendimento médio de [RENDIMENTO] kg/ha estabelecido pela CONAB para o Estado do Pará na safra [SAFRA], estima-se uma capacidade produtiva de aproximadamente [PRODUÇÃO] kg, equivalente a [PRODUÇÃO] toneladas de grãos." },
-  { id: "cap-base", categoria: "Capacidade produtiva", titulo: "Capacidade produtiva – modelo-base", fonte: "Modelo-base",
-    texto: "[Adicionalmente / A título de informação], a área possui aproximadamente [ÁREA PRODUTIVA] hectares de área produtiva. Considerando o rendimento médio de [RENDIMENTO] kg/ha estabelecido pela CONAB para o Estado de [UF] na safra [SAFRA], estima-se uma capacidade produtiva de aproximadamente [PRODUÇÃO] kg, equivalente a [PRODUÇÃO] toneladas de grãos." },
-  { id: "mon-1", categoria: "Monitoramento", titulo: "Monitoramento contínuo da capacidade produtiva", fonte: "A – Casos 1 a 3",
-    texto: "Ressalta-se, contudo, a importância do monitoramento contínuo da capacidade produtiva estimada da área, de modo a assegurar que os volumes comercializados e recebidos pela companhia permaneçam compatíveis com o potencial produtivo do imóvel rural." },
-  { id: "mon-2", categoria: "Monitoramento", titulo: "Rastreabilidade e coerência dos volumes", fonte: "A – Casos 1 a 3",
-    texto: "Tal procedimento contribui para a manutenção da rastreabilidade da produção, da coerência entre os volumes negociados e a capacidade produtiva da área e da conformidade socioambiental exigida pelas políticas e pelos procedimentos internos da companhia." },
-  { id: "mon-ti", categoria: "Monitoramento", titulo: "Monitoramento – Terra Indígena (demarcação)", fonte: "A – Caso 6",
-    texto: "Contudo, recomenda-se o monitoramento contínuo do cliente/fornecedor, a fim de identificar e reportar eventuais avanços no processo de demarcação da referida terra indígena." },
-  { id: "cha-intro", categoria: "Operação em andamento", titulo: "Introdução – pedido informado no chamado", fonte: "A – Casos 4 a 8",
-    texto: "No chamado foi informado que o pedido de análise e eventual desbloqueio:" },
-  { id: "op-1", categoria: "Operação em andamento", titulo: "Opção 1 – Contrato Fixo/Balcão na alçada L", fonte: "A – Casos 4 a 8",
-    texto: "Opção 1 – Contrato Fixo/Balcão na alçada L: tem por objetivo viabilizar a continuidade da operação referente ao contrato fixo/balcão nº [Nº DO CONTRATO], envolvendo o volume de [VOLUME DO CONTRATO]kg de [SOJA/MILHO], atualmente enquadrado na alçada L em razão do bloqueio acima mencionado/visando à geração de novo contrato." },
-  { id: "op-2", categoria: "Operação em andamento", titulo: "Opção 2 – Contrato Fixo/Balcão já gerado", fonte: "A – Casos 4 a 8",
-    texto: "Opção 2 - Contrato Fixo/Balcão já gerado: tem por objetivo viabilizar a continuidade da operação referente ao contrato fixo/balcão nº [Nº DO CONTRATO], envolvendo o volume de [VOLUME DO CONTRATO]kg de [SOJA/MILHO], firmado em [DATA DA GERAÇÃO], que tem como área de formação de lavoura vinculado à ele, a área registrada no CAR [INSERIR CAR]." },
-  { id: "op-3", categoria: "Operação em andamento", titulo: "Opção 3 – Hedge para nova compra", fonte: "A – Casos 4 a 8",
-    texto: "Opção 3 – Hedge para nova compra: tem como finalidade a aplicação do hedge nº [Nº DO HEDGE], visando à geração de novo contrato no volume de [VOLUME DO HEDGE] kg de ==soja/milho==." },
-  { id: "op-4", categoria: "Operação em andamento", titulo: "Opção 4 – Pedido de insumos", fonte: "A – Casos 4 a 8",
-    texto: "Opção 4 – Pedido de insumos: tem por objetivo viabilizar a continuidade da operação vinculada ao Pedido de Insumos nº [Nº DO PEDIDO], emitido em [DATA DA EMISSÃO], cuja área de entrega e/ou aplicação corresponde à área objeto da presente análise." },
-  { id: "op-b1", categoria: "Operação em andamento", titulo: "Pedido de insumos (CAR Suspenso/Cancelado)", fonte: "B – Caso 9 (CAR)",
-    texto: "Opção 1 – Pedido de Insumos: Pedido de insumos nº [INSERIR Nº], emitido em [DATA], cuja entrega está prevista para a Fazenda [NOME DA FAZENDA], localizada em [MUNICÍPIO/UF]." },
-  { id: "op-b2", categoria: "Operação em andamento", titulo: "Contrato (CAR Suspenso/Cancelado)", fonte: "B – Caso 9 (CAR)",
-    texto: "Opção 2 – Contrato: cumprimento do contratos fixo nº [INSERIR Nº], firmados em [DATA], referentes ao volume total de [VOLUME] kg de ==SOJA/MILHO==, o qual possuí vinculada como área de formação de lavoura o imóvel registrado no CAR [Nº DO CAR], localizado em [MUNICÍPIO/UF]." },
-  { id: "emb-iso", categoria: "Fundamentação", titulo: "Embargo isolado da área de cultivo", fonte: "A – Casos 3, 5",
-    texto: "Em análise às imagens de satélite verificou-se que os polígonos embargados estão devidamente isolados da área destinada ao cultivo de grãos, portanto, em conformidade." },
-  { id: "emb-150", categoria: "Fundamentação", titulo: "Área embargada a mais de 150 km (com rótulo da opção)", fonte: "A – Casos 2 e 4",
-    texto: "Opção 2 - Área embargada distante da área de originação (raio mínimo de 150 km): A área indicada para análise está localizada no município/estado de [MUNICÍPIO/UF] e registrada no CAR [Nº DO CAR], encontra-se a uma distância superior a 150km da área objeto do embargo. Dessa forma, atende ao critério de mitigação de risco de triangulação previsto na política da companhia, não sendo identificados impedimentos sob esse aspecto." },
-  { id: "ti-pol", categoria: "Fundamentação", titulo: "Terra Indígena – política (status Homologada)", fonte: "A – Caso 6",
-    texto: "De acordo com a política vigente da companhia, somente negociações envolvendo áreas sobrepostas a terras indígenas com status “Homologada” pelo Governo Federal são passíveis de bloqueio." },
-  { id: "ti-concl", categoria: "Fundamentação", titulo: "Terra Indígena – status Declarada", fonte: "A – Caso 6",
-    texto: "Dessa forma, considerando que a Terra Indígena sobreposta às áreas objeto da presente análise possui status legal “Declarada”, conclui-se que, até o momento, as áreas permanecem em conformidade com os critérios socioambientais estabelecidos pela companhia." },
-  { id: "assent", categoria: "Fundamentação", titulo: "CAR de assentamento – passivos de terceiros", fonte: "A – Caso 7",
-    texto: "O CAR [Nº DO CAR] corresponde a uma área de assentamento, dentro da qual o CAR do cliente está inserido. Assim, o bloqueio identificado decorre exclusivamente de passivos ambientais pertencentes a terceiros, associados ao assentamento, e não ao cliente ou de sua área específica." },
-  { id: "pvg-reg-a", categoria: "Fundamentação", titulo: "PVG – documentos para regularização (versão A – Caso 8)", fonte: "A – Caso 8",
-    texto: "Para regularizar referido passivo é necessário apresentar o Licenciamento Ambiental Rural (LAR) válido e/ou Plano de Recuperação de Áreas Degradadas (PRAD) elaborado por profissional habilitado e devidamente protocolo junto ao órgão ambiental competente." },
-  { id: "pvg-reg-c", categoria: "Fundamentação", titulo: "PVG – documentos para regularização (versão C – Casos 3/4)", fonte: "C – Caso 3",
-    texto: "Para a regularização do referido passivo, é necessário apresentar o Licenciamento Ambiental Rural (LAR) válida e/ou o Plano de Recuperação de Áreas Degradadas (PRAD) elaborado por profissional habilitado e devidamente protocolado junto ao órgão ambiental competente." },
-  { id: "pvg-lar-ok", categoria: "Fundamentação", titulo: "PVG – LAR válida apresentada", fonte: "A – Caso 8",
-    texto: "No presente chamado foi apresentado Licenciamento Ambiental Rural (LAR) nº [Nº DO DOCUMENTO], com validade até [DATA], que autoriza o desenvolvimento de atividades agrícolas de culturas de ciclo curto, incluindo soja, milho e demais culturas anuais." },
-  { id: "pvg-apta", categoria: "Fundamentação", titulo: "Área regularizada e apta", fonte: "A – Caso 8",
-    texto: "Assim, a área encontra-se regularizada do ponto de vista ambiental e apta para operações comerciais." },
-  { id: "nao-apta", categoria: "Fundamentação", titulo: "Área não atende aos critérios de compliance", fonte: "C – Casos 3 e 4",
-    texto: "Dessa forma, a área em análise não atende aos critérios de compliance socioambiental e, consequentemente, não está apta a ser vinculada a qualquer operação." },
-  { id: "lar-120", categoria: "Fundamentação", titulo: "LAR – renovação com 120 dias (LC 140/2011 e CONAMA 237/1997)", fonte: "C – Caso 4",
-    texto: "Para que o LAR seja considerado válido e tenha sua eficácia prorrogada após o vencimento, o requerimento de renovação deve ter sido protocolado junto ao órgão ambiental competente com antecedência mínima de 120 (cento e vinte) dias da data de expiração da licença, conforme dispõem o art. 14, § 4º, da Lei Complementar Federal nº 140/2011 e o art. 18, § 4º, da Resolução CONAMA nº 237/1997." },
-  { id: "lar-efic", categoria: "Fundamentação", titulo: "LAR – perda de eficácia", fonte: "C – Caso 4",
-    texto: "Por conseguinte, caso o protocolo de renovação tenha sido realizado fora do prazo estabelecido ou após a data de expiração da licença, opera-se a perda de eficácia do ato administrativo, não havendo prorrogação automática." },
-  { id: "lar-sanc", categoria: "Fundamentação", titulo: "LAR – atividade sem licenciamento", fonte: "C – Caso 4",
-    texto: "Nesses casos, a atividade passa a ser exercida sem o devido licenciamento, sujeitando o empreendedor às sanções administrativas cabíveis, uma vez que o protocolo extemporâneo (fora do prazo) não tem o condão de restabelecer a validade da licença vencida." },
-  { id: "prodes-1", categoria: "Fundamentação", titulo: "PRODES – diretriz da Diretoria de Sustentabilidade", fonte: "C – Caso 5",
-    texto: "Conforme diretriz estabelecida pela Diretoria de Sustentabilidade da ADM, imóveis que apresentem registros dessa natureza devem ser automaticamente classificados como restritos para fins de vinculação a operações comerciais, independentemente de sua situação perante a legislação ambiental vigente." },
-  { id: "prodes-2", categoria: "Fundamentação", titulo: "PRODES – Política Global (compromisso voluntário)", fonte: "C – Caso 5",
-    texto: "É importante destacar que esse critério decorre de uma Política Global da ADM, não constituindo exigência legal nem obrigação prevista em acordos setoriais. Trata-se de compromisso voluntariamente assumido pela companhia como parte de sua estratégia de sustentabilidade e de gestão de riscos socioambientais." },
-  { id: "prodes-3", categoria: "Fundamentação", titulo: "PRODES – sem regularização por documentos", fonte: "C – Caso 5",
-    texto: "Em razão desse enquadramento, não há previsão de regularização da restrição mediante a simples apresentação de documentação complementar, uma vez que o impedimento está vinculado ao atendimento das diretrizes corporativas internas da companhia." },
-  { id: "car-bcb", categoria: "Fundamentação", titulo: "CAR Suspenso/Cancelado – política e Resolução BCB nº 140/2021", fonte: "B – Caso 9 (CAR)",
-    texto: "Tal condição encontra-se em desacordo com as diretrizes estabelecidas pela política interna da ADM, bem como com a Resolução BCB nº 140/2021, que dispõe sobre impedimentos e restrições aplicáveis à concessão de crédito rural para imóveis que apresentem pendências ou irregularidades de natureza socioambiental." },
-  { id: "car-status", categoria: "Fundamentação", titulo: "CAR – somente status Ativo ou Pendente", fonte: "B – Caso 9 (CAR)",
-    texto: "Conforme os critérios internos vigentes, somente imóveis cadastrados no CAR com status \"Ativo\" ou \"Pendente\" podem ser vinculados a contratos e operações comerciais. Consequentemente, imóveis classificados com status \"Suspenso\" ou \"Cancelado\" não são elegíveis para vinculação a negociações ou contratação de operações." },
-  { id: "exc-1", categoria: "Desbloqueio excepcional", titulo: "Desbloqueio excepcional e pontual", fonte: "B – Caso 9",
-    texto: "Considerando que a operação já foi formalizada e se encontra em fase de execução e cumprimento contratual, o desbloqueio será concedido em caráter excepcional e pontual, exclusivamente para permitir a conclusão da operação já existente, não constituindo autorização para a formalização de novos negócios vinculados à área em questão." },
-  { id: "exc-2", categoria: "Desbloqueio excepcional", titulo: "Novas negociações permanecem vedadas", fonte: "B – Caso 9",
-    texto: "Ressalta-se que eventuais novas negociações, contratações ou operações envolvendo o cliente e/ou a área objeto desta análise permanecem vedadas e não contam com a anuência da equipe de Sustentabilidade." },
-  { id: "exc-3", categoria: "Desbloqueio excepcional", titulo: "Comunicar conclusão para restabelecer bloqueio", fonte: "B – Caso 9",
-    texto: "Dessa forma, solicita-se que, após o integral cumprimento do contrato nº [Nº DO CONTRATO] ou do Pedido de Insumos nº [Nº DO PEDIDO], a equipe responsável comunique a conclusão da operação para que o bloqueio seja restabelecido no sistema, mitigando o risco de formalização de novas negociações sem a devida avaliação socioambiental." },
-  { id: "exc-4", categoria: "Desbloqueio excepcional", titulo: "Operação formalizada antes do apontamento", fonte: "B – Caso 9 (CAR)",
-    texto: "Diante do exposto, considerando que a operação foi formalizada anteriormente ao apontamento que ensejou o bloqueio da área, presume-se que, à época da emissão do pedido, o imóvel atendia aos requisitos de elegibilidade então exigidos." },
-  { id: "exc-5", categoria: "Desbloqueio excepcional", titulo: "Desbloqueio sem regularização da restrição", fonte: "B – Caso 9 (CAR)",
-    texto: "Dessa forma, o desbloqueio será realizado em caráter excepcional e exclusivamente para possibilitar o cumprimento da operação já contratada, sem que isso represente regularização da restrição atualmente existente." },
-  { id: "exc-6", categoria: "Desbloqueio excepcional", titulo: "CAR Suspenso – novas negociações não autorizadas", fonte: "B – Caso 9 (CAR)",
-    texto: "==**EM CASO DO CAR SUSPENSO:==** Ressalta-se que não estão autorizadas novas negociações, contratações ou vinculações envolvendo a área em questão enquanto o status do CAR permanecer \"Suspenso\", sendo necessária a regularização cadastral para restabelecimento de sua elegibilidade perante os critérios socioambientais aplicáveis." },
-  { id: "exc-7", categoria: "Desbloqueio excepcional", titulo: "Chamado permanecerá aberto", fonte: "B – Caso 9 (CAR)",
-    texto: "Por fim, este chamado permanecerá aberto. Solicita-se que, após a conclusão da operação vinculada ao Pedido de Insumos/Contrato nº [INSERIR Nº], nos comunique sobre o encerramento da entrega, para que o bloqueio da área seja restabelecido." },
-  { id: "con-fav", categoria: "Conclusão", titulo: "Conclusão favorável – prospecção", fonte: "A – Caso 1",
-    texto: "Diante do exposto, conclui-se que tanto [o produtor / a empresa] quanto a área objeto da presente análise encontram-se em conformidade sob a ótica socioambiental, **não tendo sido identificados impedimentos à realização de negociações.**" },
-  { id: "con-fav-desb", categoria: "Conclusão", titulo: "Conclusão favorável – com desbloqueio", fonte: "A – Caso 2",
-    texto: "Diante do exposto, conclui-se que tanto [o produtor / a empresa] quanto a área objeto da presente análise encontram-se em conformidade sob a ótica socioambiental, **não tendo sido identificados impedimentos à realização de negociações, ==motivo pelo qual o desbloqueio foi devidamente realizado==.**" },
-  { id: "con-fav-op", categoria: "Conclusão", titulo: "Conclusão favorável – operação em andamento", fonte: "A – Caso 4",
-    texto: "Diante do exposto, considerando que o [o produtor / a empresa] e a área objeto da presente análise encontram-se em conformidade sob a ótica socioambiental ==e que o volume negociado é compatível com a capacidade produtiva da área==, conclui‑se que não há impedimentos ambientais, motivo pelo qual o desbloqueio foi devidamente realizado." },
-  { id: "con-fav-lar", categoria: "Conclusão", titulo: "Conclusão favorável – licenciamento vigente", fonte: "A – Caso 8",
-    texto: "Diante do exposto, considerando que [o produtor / a empresa]  e a área objeto da presente análise encontram-se em conformidade sob a ótica socioambiental comprovada por licenciamento vigente ==e que o volume negociado é plenamente compatível com sua capacidade produtiva estimada==, conclui-se que não existem impedimentos ambientais para a operação, motivo pelo qual o desbloqueio foi realizado." },
-  { id: "con-blq-cult", categoria: "Conclusão", titulo: "Bloqueio mantido – ausência de cultivo", fonte: "C – Caso 1",
-    texto: "Diante do exposto, considerando que a análise das imagens de satélite confirmou a inexistência de áreas de cultivo de grãos na propriedade objeto desta avaliação, o que impossibilita seu enquadramento como área de formação de lavoura, e considerando, ainda, que o desbloqueio solicitado visa à [continuidade da operação acima referida / formalização de nova operação], **o bloqueio deverá ser mantido.**" },
-  { id: "con-blq-pvg", categoria: "Conclusão", titulo: "Bloqueio mantido – PVG", fonte: "C – Caso 3",
-    texto: "Diante do exposto, verifica-se que a área em análise não está em conformidade socioambiental para negociações. Assim, **o bloqueio será mantido, não sendo recomendadas negociações [[com este produtor / com esta empresa]], nesta área ou em áreas que não respeitem o raio de triangulação de 150km previsto na política da companhia.**" },
-  { id: "con-blq-lar", categoria: "Conclusão", titulo: "Bloqueio mantido – LAR vencida", fonte: "C – Caso 4",
-    texto: "Diante do exposto, considerando a existência da restrição ambiental apontada e a ausência de documento válido para sua regularização, **o bloqueio será mantido, não sendo recomendadas negociações [[com este produtor / com esta empresa]], nesta área ou em áreas que não respeitem o raio de triangulação de 150 km previsto na política da companhia.**" },
-  { id: "con-blq-prodes", categoria: "Conclusão", titulo: "Bloqueio mantido – PRODES", fonte: "C – Caso 5",
-    texto: "Dessa forma, considerando que as áreas objeto da presente análise não atendem aos critérios de conformidade socioambiental atualmente adotados pela ADM, **o bloqueio será mantido**, não sendo recomendada sua vinculação a qualquer tipo de operação comercial, incluindo a comercialização de grãos, operações de originação ou negociações envolvendo insumos." },
-  { id: "ori-areas", categoria: "Orientação", titulo: "Apresentar outras áreas de originação", fonte: "C – Caso 1",
-    texto: "Assim, orienta-se a apresentação de outras áreas de originação para análise, de modo que o volume negociado e a ser recebido pela companhia esteja devidamente respaldado por capacidade produtiva e regularidade socioambiental compatíveis com o montante da operação." },
+  /* 1 e 2 – Identificação e situação da área */
+  { id: 'id-limpo', blocos: [1, 2], titulo: 'Cliente e área sem restrições', fonte: 'A – Caso 1', texto: TX.idLimpo },
+  { id: 'id-emb-cpf', blocos: [1, 2], titulo: 'Embargo vinculado ao CPF/CNPJ (clifor bloqueado)', fonte: 'A – Casos 2 e 4', texto: TX.idEmbargoCpf },
+  { id: 'id-emb-area', blocos: [1, 2], titulo: 'CPF/CNPJ sem restrição – área com embargo', fonte: 'A – Casos 3 e 5', texto: TX.idEmbargoArea },
+  { id: 'id-ti', blocos: [1, 2], titulo: 'Sobreposição com Terra Indígena “Declarada”', fonte: 'A – Caso 6', texto: TX.idTI },
+  { id: 'id-assent', blocos: [1, 2], titulo: 'Triangulação com embargos do assentamento', fonte: 'A – Caso 7', texto: TX.idAssentamento },
+  { id: 'id-pvg-lar', blocos: [1, 2], titulo: 'Restrição PVG vinculada ao CPF/CNPJ', fonte: 'A – Caso 8', texto: TX.idPvgLar },
+  { id: 'id-exc', blocos: [1, 2], titulo: 'Restrição na área – operação já formalizada', fonte: 'B – Caso 9', texto: TX.idExcepcional },
+  { id: 'id-car', blocos: [1, 2], titulo: 'CAR com status Suspenso/Cancelado', fonte: 'B – Caso 10', texto: TX.idCarStatus },
+  { id: 'id-cultivo', blocos: [1, 2], titulo: 'Ausência de comprovação de 10% de cultivo', fonte: 'C – Caso 11', texto: TX.idCultivo },
+  { id: 'id-pvg', blocos: [1, 2], titulo: 'Desmatamento PVG na própria área (Pará)', fonte: 'C – Casos 12 e 13', texto: TX.idPvg },
+  { id: 'id-base', blocos: [1, 2], titulo: 'Identificação e situação – modelo-base', fonte: 'Modelo-base', texto: TX.idBase },
+
+  /* 3 – Fundamentação */
+  { id: 'emb-iso', blocos: [3], titulo: 'Embargo isolado da área de cultivo', fonte: 'A – Casos 2 a 5', texto: TX.embIsolado },
+  { id: 'emb-150', blocos: [3], titulo: 'Área de originação a mais de 150 km do embargo', fonte: 'A – Casos 2 e 4', texto: TX.emb150 },
+  { id: 'ti-pol', blocos: [3], titulo: 'Terra Indígena – só “Homologada” bloqueia', fonte: 'A – Caso 6', texto: TX.tiPolitica },
+  { id: 'ti-decl', blocos: [3], titulo: 'Terra Indígena “Declarada” – área em conformidade', fonte: 'A – Caso 6', texto: TX.tiDeclarada },
+  { id: 'assent', blocos: [3], titulo: 'CAR de assentamento – passivos de terceiros', fonte: 'A – Caso 7', texto: TX.assentamento },
+  { id: 'pvg-reg', blocos: [3], titulo: 'PVG – documentos para regularização (LAR/PRAD)', fonte: 'A – Caso 8; C – Caso 12', texto: TX.pvgRegularizacao },
+  { id: 'pvg-lar-ok', blocos: [3], titulo: 'PVG – LAR válido apresentado', fonte: 'A – Caso 8', texto: TX.pvgLarValido },
+  { id: 'pvg-apta', blocos: [3], titulo: 'Área regularizada e apta', fonte: 'A – Caso 8', texto: TX.pvgApta },
+  { id: 'car-bcb', blocos: [3], titulo: 'CAR Suspenso/Cancelado – política e Resolução BCB nº 140/2021', fonte: 'B – Caso 10', texto: TX.carBcb },
+  { id: 'car-status', blocos: [3], titulo: 'CAR – somente status Ativo ou Pendente', fonte: 'B – Caso 10', texto: TX.carStatusPolitica },
+  { id: 'cultivo-sat', blocos: [3], titulo: 'Imagens de satélite sem áreas de cultivo', fonte: 'C – Caso 11', texto: TX.cultivoSatelite },
+  { id: 'nao-apta', blocos: [3], titulo: 'Área não atende aos critérios de compliance', fonte: 'C – Casos 12 e 13', texto: TX.naoApta },
+  { id: 'lar-venc', blocos: [3], titulo: 'LAR vencido apresentado', fonte: 'C – Caso 13', texto: TX.larVencido },
+  { id: 'lar-120', blocos: [3], titulo: 'LAR – renovação com 120 dias (LC 140/2011 e CONAMA 237/1997)', fonte: 'C – Caso 13', texto: TX.lar120 },
+  { id: 'lar-efic', blocos: [3], titulo: 'LAR – perda de eficácia', fonte: 'C – Caso 13', texto: TX.larEficacia },
+  { id: 'lar-sanc', blocos: [3], titulo: 'LAR – atividade sem licenciamento', fonte: 'C – Caso 13', texto: TX.larSancoes },
+  { id: 'prodes-1', blocos: [3], titulo: 'PRODES – diretriz da Diretoria de Sustentabilidade', fonte: 'C – Caso 14', texto: TX.prodesDiretriz },
+  { id: 'prodes-2', blocos: [3], titulo: 'PRODES – Política Global (compromisso voluntário)', fonte: 'C – Caso 14', texto: TX.prodesPolitica },
+  { id: 'prodes-3', blocos: [3], titulo: 'PRODES – sem regularização por documentos', fonte: 'C – Caso 14', texto: TX.prodesSemRegularizacao },
+  { id: 'fund-base', blocos: [3], titulo: 'Fundamentação – a redigir (modelo-base)', fonte: 'Modelo-base', texto: TX.fundBase },
+
+  /* Trechos fundamentados (enviados pela área) */
+  { id: 'tf-apa', blocos: [3], categoria: 'Trechos fundamentados', titulo: 'Unidade de Conservação – APA (uso sustentável) – desbloqueada', fonte: 'Trechos fundamentados',
+    paragrafos: [TX.apa1, TX.apa2] },
+  { id: 'tf-art54', blocos: [3], categoria: 'Trechos fundamentados', titulo: 'Embargo não isolado – multa do art. 54 do Decreto nº 6.514/2008', fonte: 'Trechos fundamentados',
+    paragrafos: [TX.art54Intro, TX.art54Texto, TX.art54Pena] },
+  { id: 'tf-ibama-doc', blocos: [3, 6], categoria: 'Trechos fundamentados', titulo: 'Embargo IBAMA não isolado – documentação estadual não regulariza (com conclusão)', fonte: 'Trechos fundamentados',
+    paragrafos: [TX.ibamaDoc1, TX.ibamaDoc2, TX.ibamaDoc3, TX.ibamaDoc4, TX.ibamaDoc5, TX.ibamaDoc6, TX.ibamaDoc7] },
+  { id: 'tf-ibama-fund', blocos: [3], categoria: 'Trechos fundamentados', titulo: 'Embargo IBAMA – documentação estadual não regulariza (só fundamentação)', fonte: 'Trechos fundamentados',
+    paragrafos: [TX.ibamaDoc1, TX.ibamaDoc2, TX.ibamaDoc3, TX.ibamaDoc4, TX.ibamaDoc5] },
+  { id: 'tf-nova-area', blocos: [3, 6], categoria: 'Trechos fundamentados', titulo: 'Embargo em nova área indicada – não isolado do cultivo (com conclusão)', fonte: 'Trechos fundamentados',
+    paragrafos: [TX.novaArea1, TX.novaArea2, TX.novaArea3, TX.novaArea4, TX.novaArea5, TX.novaArea6, TX.novaArea7, TX.novaArea8, TX.novaArea9] },
+  { id: 'tf-washout', blocos: [5, 6], categoria: 'Trechos fundamentados', titulo: 'Washout / contratação de volume de algodão – desbloqueio sem análise', fonte: 'Trechos fundamentados',
+    paragrafos: [TX.washout1, TX.washout2, TX.washout3, TX.washout4] },
+  { id: 'tf-reenq', blocos: [1, 3, 6], categoria: 'Trechos fundamentados', titulo: 'Reenquadramento de cliente DIRETO para INDIRETO', fonte: 'Trechos fundamentados',
+    paragrafos: [TX.reenqId, TX.reenq2, TX.reenq3, TX.reenq4] },
+  { id: 'tf-reenq-car', blocos: [3], categoria: 'Trechos fundamentados', titulo: 'Reenquadramento – impedimento pela ausência de CAR', fonte: 'Trechos fundamentados', texto: TX.reenqSemCar },
+  { id: 'tf-reenq-farelo', blocos: [5], categoria: 'Trechos fundamentados', titulo: 'Reenquadramento – operação com farelo de soja', fonte: 'Trechos fundamentados', texto: TX.reenqFarelo },
+
+  /* 4 – Capacidade produtiva */
+  { id: 'cap-uf', blocos: [4], titulo: 'Capacidade produtiva – Estado de [UF]', fonte: 'A – Casos 1 a 7; B – Caso 9', texto: TX.capUF },
+  { id: 'cap-pa', blocos: [4], titulo: 'Capacidade produtiva – Pará (Adicionalmente)', fonte: 'A – Caso 8', texto: TX.capPA },
+  { id: 'cap-pa-info', blocos: [4], titulo: 'Capacidade produtiva – Pará (A título de informação)', fonte: 'C – Casos 12 e 13', texto: TX.capPAInfo },
+  { id: 'cap-base', blocos: [4], titulo: 'Capacidade produtiva – modelo-base', fonte: 'Modelo-base', texto: TX.capBase },
+
+  /* 5 – Operação */
+  { id: 'op-alcada', blocos: [5], titulo: 'Contrato fixo/balcão na alçada L', fonte: 'A – Casos 4 a 8; C – Caso 11', texto: TX.opAlcadaL },
+  { id: 'op-gerado', blocos: [5], titulo: 'Contrato fixo/balcão já gerado', fonte: 'A – Casos 4 a 8', texto: TX.opGerado },
+  { id: 'op-hedge', blocos: [5], titulo: 'Hedge para nova compra', fonte: 'A – Casos 4 a 8; C – Caso 11', texto: TX.opHedge },
+  { id: 'op-insumos', blocos: [5], titulo: 'Pedido de insumos', fonte: 'A – Casos 4 a 8', texto: TX.opInsumos },
+  { id: 'op-exc-contrato', blocos: [5], titulo: 'Contrato já formalizado (desbloqueio excepcional)', fonte: 'B – Caso 9', texto: TX.opExcContrato },
+  { id: 'op-exc-insumos', blocos: [5], titulo: 'Pedido de insumos já formalizado (desbloqueio excepcional)', fonte: 'B – Caso 9', texto: TX.opExcInsumos },
+  { id: 'op-car-insumos', blocos: [5], titulo: 'Pedido de insumos – entrega na fazenda (CAR Suspenso/Cancelado)', fonte: 'B – Caso 10', texto: TX.opCarInsumos },
+  { id: 'op-car-contrato', blocos: [5], titulo: 'Contrato fixo (CAR Suspenso/Cancelado)', fonte: 'B – Caso 10', texto: TX.opCarContrato },
+  { id: 'op-base', blocos: [5], titulo: 'Operação – a descrever (modelo-base)', fonte: 'Modelo-base', texto: TX.opBase },
+
+  /* 6 – Conclusão */
+  { id: 'con-fav', blocos: [6], titulo: 'Favorável – prospecção', fonte: 'A – Caso 1', texto: TX.conFavoravel },
+  { id: 'con-fav-desb', blocos: [6], titulo: 'Favorável – com desbloqueio', fonte: 'A – Casos 2 e 3', texto: TX.conFavDesbloqueio },
+  { id: 'con-fav-op', blocos: [6], titulo: 'Favorável – operação em andamento', fonte: 'A – Casos 4 a 7', texto: TX.conFavOperacao },
+  { id: 'con-fav-lar', blocos: [6], titulo: 'Favorável – licenciamento vigente', fonte: 'A – Caso 8', texto: TX.conFavLar },
+  { id: 'exc-pontual', blocos: [6], categoria: 'Desbloqueio excepcional', titulo: 'Desbloqueio excepcional e pontual', fonte: 'B – Caso 9', texto: TX.excPontual },
+  { id: 'exc-vedadas', blocos: [6, 7], categoria: 'Desbloqueio excepcional', titulo: 'Novas negociações permanecem vedadas', fonte: 'B – Caso 9', texto: TX.excVedadas },
+  { id: 'exc-comunicar', blocos: [7], categoria: 'Desbloqueio excepcional', titulo: 'Comunicar conclusão para restabelecer o bloqueio', fonte: 'B – Caso 9', texto: TX.excComunicar },
+  { id: 'exc-anterior', blocos: [6], categoria: 'Desbloqueio excepcional', titulo: 'Operação formalizada antes do apontamento', fonte: 'B – Caso 10', texto: TX.excAnterior },
+  { id: 'exc-sem-reg', blocos: [6], categoria: 'Desbloqueio excepcional', titulo: 'Desbloqueio sem regularização da restrição', fonte: 'B – Caso 10', texto: TX.excSemRegularizar },
+  { id: 'exc-suspenso', blocos: [7], categoria: 'Desbloqueio excepcional', titulo: 'CAR Suspenso – novas negociações não autorizadas', fonte: 'B – Caso 10', texto: TX.excSuspenso },
+  { id: 'exc-aberto', blocos: [7], categoria: 'Desbloqueio excepcional', titulo: 'Chamado permanecerá aberto', fonte: 'B – Caso 10', texto: TX.excChamadoAberto },
+  { id: 'con-cultivo', blocos: [6], titulo: 'Bloqueio mantido – ausência de cultivo', fonte: 'C – Caso 11', texto: TX.conCultivo },
+  { id: 'con-pvg', blocos: [6], titulo: 'Bloqueio mantido – PVG', fonte: 'C – Caso 12', texto: TX.conPvg },
+  { id: 'con-lar', blocos: [6], titulo: 'Bloqueio mantido – LAR vencido', fonte: 'C – Caso 13', texto: TX.conLarVencido },
+  { id: 'con-prodes', blocos: [6], titulo: 'Bloqueio mantido – PRODES', fonte: 'C – Caso 14', texto: TX.conProdes },
+  { id: 'con-base', blocos: [6], titulo: 'Conclusão – modelo-base', fonte: 'Modelo-base', texto: TX.conBase },
+
+  /* 7 – Orientação */
+  { id: 'mon-cap', blocos: [7], titulo: 'Monitoramento contínuo da capacidade produtiva', fonte: 'A – Casos 1 a 3', texto: TX.monCapacidade },
+  { id: 'mon-rastr', blocos: [7], titulo: 'Rastreabilidade e coerência dos volumes', fonte: 'A – Casos 1 a 3', texto: TX.monRastreabilidade },
+  { id: 'mon-ti', blocos: [7], titulo: 'Monitoramento – demarcação da Terra Indígena', fonte: 'A – Caso 6', texto: TX.monTI },
+  { id: 'ori-areas', blocos: [7], titulo: 'Apresentar outras áreas de originação', fonte: 'C – Caso 11', texto: TX.oriAreas },
+  { id: 'ori-base', blocos: [7], titulo: 'Orientação – modelo-base', fonte: 'Modelo-base', texto: TX.oriBase },
+
+  /* Estrutura completa */
+  { id: 'base-completo', blocos: [], categoria: 'Modelo-base (estrutura padrão)', titulo: 'Modelo-base completo – blocos 1 a 7', fonte: 'Modelo-base (seção 4 do Word)',
+    paragrafos: MODELOS.find((m) => m.id === 'base').paragrafos },
 ];
 
-/* Pendências encontradas no Word — para validação humana. Os textos NÃO foram corrigidos. */
+/* Pendências para validação humana. Os textos NÃO foram corrigidos. */
 const PENDENCIAS_WORD = [
-  { id: "p01", modelos: [], descricao: "O resumo \"Casos disponíveis\" (seção 2) lista apenas A. Parecer favorável – Caso 1 e B. Bloqueio mantido – Casos 2 a 5, mas o corpo do documento tem A (Casos 1 a 8), B. Desbloqueio excepcional e C. Bloqueio mantido. Numeração e agrupamento divergem." },
-  { id: "p02", modelos: ["exc-09a", "exc-09b"], descricao: "Dois modelos com o mesmo rótulo \"CASO 9\" na seção B. Desbloqueio excepcional." },
-  { id: "p03", modelos: ["blq-01"], descricao: "Em C. Bloqueio mantido não existe \"Caso 2\": o resumo chama de \"Caso 2\" o modelo que o corpo chama de \"CASO 1 – AUSÊNCIA DE ÁREA DE CULTIVO\"." },
-  { id: "p04", modelos: ["fav-08", "blq-03", "blq-04"], descricao: "O Anexo informa que \"Licenciamento Ambiental Rural (LAR)\" foi trocado por \"Licença de Atividade Rural (LAR)\" com destaque azul, mas os textos destes modelos ainda usam \"Licenciamento Ambiental Rural\", sem destaque. O título do C – Caso 4 usa \"Licença de Atividade Rural (LAR) VENCIDO\" (Anexo: \"VENCIDA\"). Confirmar a nomenclatura com a SEMAS-PA." },
-  { id: "p05", modelos: ["fav-01", "fav-02", "fav-03", "fav-04", "fav-05", "fav-06", "fav-07", "fav-08"], descricao: "O Anexo diz que a capacidade produtiva usa \"rendimento médio de [RENDIMENTO] kg/ha … na safra [SAFRA]\" em todos os casos, mas os modelos A usam \"fator médio de rendimento … de [RENDIMENTO] kg/ha\", sem safra e com sacas." },
-  { id: "p06", modelos: ["fav-04", "fav-05", "fav-06", "fav-07", "fav-08", "blq-01"], descricao: "O Anexo diz que as alternativas de contrato foram separadas em parágrafos e que \"enquadrado\" virou \"enquadrada\", mas \"Opção 1 – Contrato Fixo/Balcão na alçada L\" ainda contém \"atualmente enquadrado … mencionado/visando à geração de novo contrato\"." },
-  { id: "p07", modelos: ["blq-01"], descricao: "Frase aparentemente incompleta: \"ausência de comprovação de que, no mínimo, 10% (dez por cento) da área destinada ao cultivo de grãos.\" O Anexo prevê \"de sua extensão seja destinada ao cultivo de grãos\"." },
-  { id: "p08", modelos: ["fav-08"], descricao: "\"devidamente protocolo junto ao órgão ambiental\" — o Anexo registra a correção para \"protocolado\", aplicada só no C – Caso 3. O trecho equivalente do A – Caso 8 também diz \"Para regularizar referido passivo\" (sem a vírgula/artigo do Anexo)." },
-  { id: "p09", modelos: ["fav-01", "fav-02", "fav-03", "fav-04", "fav-05", "fav-06", "fav-07", "fav-08"], descricao: "A Obs. dos modelos manda usar a Calculadora de Capacidade Produtiva; o Anexo fala em \"Obs. com a fórmula de cálculo\". Confirmar qual orientação vale." },
-  { id: "p10", modelos: ["blq-03", "blq-04"], descricao: "Marcador com colchete duplo: \"[[com este produtor / com esta empresa]]\"." },
-  { id: "p11", modelos: ["fav-04", "fav-05", "fav-06", "fav-07", "fav-08", "exc-09b"], descricao: "Marcadores irregulares: \"[Nº DO HEDGE]\" sem destaque amarelo; \"soja/milho\" e \"SOJA/MILHO\" destacados mas sem colchetes." },
-  { id: "p12", modelos: ["fav-07"], descricao: "O marcador [Nº DO CAR] aparece para dois CARs diferentes (CAR do assentamento × CAR do cliente). \"Ibama e pela Sema-MT\" está destacado em amarelo, sem colchetes." },
-  { id: "p13", modelos: [], descricao: "[PRODUÇÃO] aparece mais de uma vez no mesmo parágrafo com significados diferentes (kg, toneladas e sacas). A ferramenta pede um valor por ocorrência." },
-  { id: "p14", modelos: ["fav-04", "fav-05", "fav-06", "fav-07", "fav-08", "exc-09b"], descricao: "Possíveis erros de digitação mantidos como no Word: \"considerando que o [o produtor / a empresa]\" (artigo repetido), \"vinculado à ele\", \"cumprimento do contratos fixo nº … firmados\", \"possuí vinculada\"; títulos dos Casos 4 e 5 (A) sem parêntese de fechamento." },
-  { id: "p15", modelos: ["fav-02", "fav-03", "fav-04", "fav-05", "fav-06", "fav-07", "fav-08", "exc-09b"], descricao: "Trechos destacados em amarelo sem colchetes (condicionais), p. ex. \"motivo pelo qual o desbloqueio foi devidamente realizado\", \"e que o volume negociado é compatível com a capacidade produtiva da área\" e \"EM CASO DO CAR SUSPENSO:\". Na ferramenta aparecem em laranja para confirmação." },
-  { id: "p16", modelos: ["fav-02", "fav-04", "fav-05", "fav-06", "fav-07", "fav-08", "exc-09b", "blq-01", "base-01"], descricao: "Não está definido se os rótulos \"Opção N – …:\" e os títulos de bloco do modelo-base devem constar do parecer final. A ferramenta mantém o texto e oferece remover o rótulo." },
-  { id: "p17", modelos: ["blq-05"], descricao: "Trecho em azul (validação): \"com ocorrência em período posterior a 2025\" — o título é \"PRODES 2025\", mas \"posterior a 2025\" indica 2026 em diante." },
-  { id: "p18", modelos: ["fav-02", "fav-03", "fav-04", "fav-05", "fav-06", "fav-07", "fav-08", "exc-09a", "exc-09b"], descricao: "Estes modelos não têm quadro \"Quando usar\" no Word." },
+  { id: 'p01', modelos: [], descricao: 'O novo Word começa na seção 2: a seção 1 (orientações de preenchimento) não está no arquivo. O Guia mantém as orientações da versão anterior.' },
+  { id: 'p02', modelos: [], descricao: 'O bloco 0 “Cabeçalho” consta da estrutura padrão, mas o Word não traz o texto dele. A ferramenta gera o cabeçalho a partir dos dados do caso (status, cliente, área e, nos casos B, a linha “Condição”). Confirmar o formato.' },
+  { id: 'p03', modelos: ['c-14'], descricao: 'O Caso 14 não tem parágrafo de identificação e situação da área: começa em “Conforme diretriz…” e fala em “as áreas objeto da presente análise” (plural). Se necessário, insira a identificação pelo painel de trechos (bloco 1 e 2).' },
+  { id: 'p04', modelos: ['a-08', 'c-12', 'c-13'], descricao: 'Os textos usam “Licenciamento Ambiental Rural (LAR)” com concordância masculina (“LAR válido/vencido”). A revisão anterior sugeria “Licença de Atividade Rural (LAR)”. Confirmar a nomenclatura com a SEMAS-PA.' },
+  { id: 'p05', modelos: ['c-11'], descricao: '“Quando usar” do Caso 11: “o mínimo de 10% da área destinado ao cultivo” (concordância).' },
+  { id: 'p06', modelos: ['b-09', 'b-10'], descricao: 'Os campos “[Nº]” da comunicação final (contrato ou pedido) usam o campo “Nº do contrato/pedido (comunicação final)”, separado do nº do contrato e do nº do pedido.' },
+  { id: 'p07', modelos: ['base'], descricao: 'No modelo-base, as alternativas longas trazem campos dentro delas (MOTIVO, o produtor / a empresa…). Enquanto não forem escolhidas, aparecem como no Word; depois de escolhidas, os campos vazios aparecem entre colchetes.' },
+  { id: 'p08', modelos: ['d-washout', 'd-reenquadramento'], descricao: 'Trechos enviados pela área: título “CONTATAÇÃO DE VOLUME” (contratação); “A validação e a confirmação dessa alteração é conduzidas” (são conduzidas).' },
+  { id: 'p09', modelos: [], descricao: 'Trecho “Embargo IBAMA não isolado – documentação…”: a frase “Todavia, os documentos anexados consistem em ____” não tem ponto final; “150km” sem espaço (o Word usa “150 km”); conclui “não recomendamos”, em 1ª pessoa, enquanto os modelos usam linguagem impessoal.' },
+  { id: 'p10', modelos: ['c-nova-area'], descricao: 'Modelo “Embargo em nova área”: o texto dizia “embargo ambiental estadual”, mas o título é “FEDERAL/ESTADUAL” — virou o campo [federal / estadual]. O texto enviado não tinha identificação: a ferramenta inclui a do Caso 3 como parágrafo opcional. “Em análise das imagens” (os modelos do Word usam “Em análise às imagens”). O negrito em “o bloqueio será mantido” foi aplicado pela regra da estrutura (decisão em negrito).' },
+  { id: 'p11', modelos: [], descricao: 'O art. 54 aparece com duas redações nos trechos enviados (“…objeto de embargo.” + “Penalidade: multa…” e “…objeto de embargo:” + “Multa…”). Ambas foram mantidas.' },
+  { id: 'p12', modelos: [], descricao: 'Trecho APA: o texto citava “APA Serra da Tabatinga”. Virou o campo “Unidade de Conservação (APA)”, que já vem preenchido com esse nome e pode ser trocado.' },
+  { id: 'p13', modelos: ['d-reenquadramento'], descricao: 'Reenquadramento: “farelo de soja” está fixo no parágrafo opcional de finalidade; ajuste no texto se for outro produto.' },
 ];
 
-/* Guia: seções 1 e 2 do Word, resumo de casos e Anexo (somente consulta). */
+/* Guia: estrutura do Word, guia rápido e orientações (somente consulta). */
 const GUIA = {
   orientacoes: [
-    "Os campos entre colchetes e destacados em amarelo, como [MUNICÍPIO/UF], devem ser substituídos pela informação do caso analisado.",
-    "Quando houver alternativas separadas por barra, como [O produtor / A empresa], mantenha apenas a opção aplicável e apague as demais.",
-    "Use “O produtor” e “CPF” para pessoa física, e “A empresa” e “CNPJ” para pessoa jurídica. Ajuste também as demais palavras que concordam com essa escolha (por exemplo: “com este produtor” / “com esta empresa”).",
-    "Se a análise envolver mais de uma área ou CAR, ajuste a concordância para o plural (as áreas indicadas, localizadas, registradas nos CARs nº...).",
-    "Números: use ponto como separador de milhar (130.290 kg) e um espaço entre o número e a unidade (150 km, 25 hectares).",
-    "Os quadros “Quando usar” e “Obs.” são apenas orientações internas e devem ser apagados antes da emissão do parecer, assim como todos os destaques coloridos.",
-    "Trechos destacados em azul, como !!este!!, precisam de validação da área responsável antes do uso (ver Anexo).",
+    'Os campos entre colchetes e destacados em amarelo, como [MUNICÍPIO/UF], devem ser substituídos pela informação do caso analisado. Na ferramenta, os campos parametrizados são preenchidos no painel “Dados do caso” e aplicados ao texto todo.',
+    'Quando houver alternativas separadas por barra, como [O produtor / A empresa], mantenha apenas a opção aplicável. Na ferramenta, “O produtor”/“A empresa”, “CPF”/“CNPJ” e “com este produtor”/“com esta empresa” saem do campo Tipo de pessoa.',
+    'Se a análise envolver mais de uma área ou CAR, ajuste a concordância para o plural (as áreas indicadas, localizadas, registradas nos CARs nº...).',
+    'Números: use ponto como separador de milhar (130.290 kg) e um espaço entre o número e a unidade (150 km, 25 hectares).',
+    'Os quadros “Quando usar” e “Obs.” são apenas orientações internas e não entram no parecer, assim como os destaques coloridos.',
+    'Trechos destacados em azul, como !!este!!, precisam de validação da área responsável antes do uso.',
   ],
-  estruturaIntro: "Todo parecer deve seguir a sequência abaixo, independentemente do caso. Os modelos da seção 3 já estão organizados dessa forma, e o modelo-base da seção 4 pode ser usado para casos ainda não previstos.",
-  estrutura: [["#", "Bloco", "Conteúdo", "Uso"], ["1", "Identificação", "Produtor/empresa, nº do CPF/CNPJ e se há ou não restrição vinculada ao CPF/CNPJ.", "Obrigatório"], ["2", "Situação da área", "Município/UF, nº do CAR, existência ou não de bloqueio e o motivo, com referência ao Relatório de Conformidade Ambiental.", "Obrigatório"], ["3", "Fundamentação", "Análise realizada (imagens de satélite, bases consultadas, documentos apresentados) e a norma, protocolo ou política que embasa a conclusão.", "Obrigatório"], ["4", "Capacidade produtiva", "Área produtiva (ha) × rendimento médio CONAB (kg/ha) = produção estimada (kg e t).", "Quando aplicável"], ["5", "Conclusão", "Iniciada por “Diante do exposto”, com o resultado em negrito: bloqueio mantido ou ausência de impedimentos.", "Obrigatório"], ["6", "Orientação", "O que deve ser apresentado para regularização ou quais cuidados observar na operação.", "Recomendado"]],
-  casosDisponiveis: [
-    "A. Parecer favorável – Caso 1: Análise de prospecção de clientes – cliente e área sem bloqueios",
-    "B. Bloqueio mantido – Caso 2: Ausência de área de cultivo – novas negociações",
-    "B. Bloqueio mantido – Caso 3: Protocolo Verde dos Grãos do Pará – restrição na área de originação",
-    "B. Bloqueio mantido – Caso 4: Protocolo Verde dos Grãos do Pará – Licença de Atividade Rural (LAR) vencida",
-    "B. Bloqueio mantido – Caso 5: PRODES 2025 – desmatamento sobreposto à camada de soja",
+  estruturaIntro: 'Todos os modelos seguem a mesma sequência. Use-a também ao redigir casos não previstos (seção 4).',
+  estrutura: [
+    ['#', 'Bloco', 'Conteúdo', 'Uso'],
+    ['0', 'Cabeçalho', 'Status da análise, cliente/CPF/CNPJ e CAR/município, para que quem recebe saiba de imediato o que foi decidido.', 'Obrigatório'],
+    ['1', 'Identificação', 'Produtor/empresa e se há ou não restrição vinculada ao CPF/CNPJ.', 'Obrigatório'],
+    ['2', 'Situação da área', 'Município/UF, nº do CAR e motivo do bloqueio.', 'Obrigatório'],
+    ['3', 'Fundamentação', 'Análise realizada (imagens de satélite, documentos, bases) e a norma, protocolo ou política aplicável.', 'Obrigatório'],
+    ['4', 'Capacidade produtiva', 'Área produtiva, fator CONAB e produção estimada em kg, toneladas e sacas.', 'Quando aplicável'],
+    ['5', 'Operação', 'O que foi pedido no chamado (contrato, hedge ou pedido de insumos).', 'Quando houver'],
+    ['6', 'Conclusão', 'Iniciada por “Diante do exposto”, com a decisão em negrito.', 'Obrigatório'],
+    ['7', 'Orientação', 'Próximos passos, documentos necessários ou cuidados na operação.', 'Recomendado'],
   ],
-  anexoIntro: "Quadro comparativo entre o texto original e o revisado. Remova este anexo da versão que será distribuída aos usuários, se preferir.",
-  anexo: [["Original", "Revisado", "Motivo"], ["Ajustes gerais (todos os casos)"], ["TEXTO PADRÕES", "TEXTOS PADRÃO PARA PARECERES SOCIOAMBIENTAIS", "Concordância (plural) e identificação do documento."], ["Título “BLOQUEIO MANTIDO” no topo, abrangendo inclusive o caso de cliente sem bloqueio", "Casos agrupados em “A. Parecer favorável” e “B. Bloqueio mantido”, com títulos no formato TEMA – RESULTADO", "O título geral não se aplicava ao caso favorável; padronização dos títulos."], ["Lacunas com sublinhado (“______”)", "Campos entre colchetes e destacados, por exemplo [MUNICÍPIO/UF]", "Indica o que deve ser preenchido e facilita a localização com Ctrl+L."], ["Obs: Inserir se tratasse de pessoa física ou pessoa jurídica sendo analisada.", "Regra incluída nas orientações de preenchimento (seção 1)", "A frase original não tinha sentido gramatical (“se tratasse”); “Obs:” → “Obs.:”."], ["O produtor/A empresa ____ não possui restrição…", "O produtor / A empresa [NOME] ([CPF/CNPJ] nº [NÚMERO]) não possui restrições…", "Inclusão do nº do documento e redação única para todos os casos."], ["localizada em ____ / registrada no CAR ____", "localizada no município de [MUNICÍPIO/UF] e registrada no CAR nº [Nº DO CAR]", "Padronização entre os casos."], ["150km de distância / 25 Hectares", "150 km / 25 hectares", "Grafia de unidades (espaço antes da unidade; minúscula)."], ["—", "Seções incluídas: orientações de preenchimento, estrutura padrão, quadro “Quando usar” em cada caso e modelo-base", "Para servir de base a quem vai emitir o parecer."], ["Caso 1 – Prospecção de clientes"], ["ANÁLISE PROSPECÇÃO DE CLIENTES", "ANÁLISE DE PROSPECÇÃO DE CLIENTES", "Ausência de preposição."], ["rendimento médio de ___ kg/ha para o Estado ___, conforme parâmetro adotado pela CONAB", "rendimento médio de [RENDIMENTO] kg/ha estabelecido pela CONAB para o Estado de [UF] na safra [SAFRA]", "Preposição (“Estado de”); inclusão da safra de referência; mesma redação em todos os casos com cálculo."], ["não sendo identificados impedimentos para a realização de negociações", "não tendo sido identificados impedimentos à realização de negociações", "Tempo verbal (a análise já foi concluída) e regência."], ["da coerência produtiva das operações", "da coerência entre os volumes negociados e a capacidade produtiva da área", "Clareza (a expressão original era vaga)."], ["—", "Obs. com a fórmula de cálculo da capacidade produtiva", "Inclusão para evitar erros de cálculo."], ["Caso 2 – Ausência de área de cultivo"], ["ausência de comprovação de, no mínimo, 10% da área destinada ao cultivo de grãos", "ausência de comprovação de que, no mínimo, 10% (dez por cento) de sua extensão seja destinada ao cultivo de grãos", "Clareza da construção."], ["130.290 kg de soja", "[VOLUME] kg de [PRODUTO]", "Valor de um caso concreto ficou fixo no modelo."], ["Alternativas na mesma frase: “atualmente enquadrado na alçada L…/visando à geração de novo contrato.”", "Opção A (contrato existente) e Opção B (novo contrato) em parágrafos separados; “enquadrado” → “enquadrada”", "As alternativas não se encaixavam na mesma frase; concordância com “operação”."], ["inexistência de áreas aptas ao cultivo de grãos", "inexistência de áreas de cultivo de grãos", "Coerência com a análise: “aptas” indica possibilidade de cultivo, que é outro conceito."], ["impossibilitando seu enquadramento", "o que impossibilita seu enquadramento", "Evita ambiguidade do gerúndio."], ["considerando ainda que o desbloqueio solicitado visa a formalização de nova operação", "considerando, ainda, que o desbloqueio solicitado visa à [continuidade da operação acima referida / formalização de nova operação]", "Crase (visar = ter como objetivo); vírgulas; coerência com a Opção A."], ["Casos 3 e 4 – Protocolo Verde dos Grãos do Pará"], ["Protocolo Verde dos Grãos (PVG)", "Protocolo Verde dos Grãos do Pará (PVG)", "Alinhamento com o título."], ["justamente na área indicada", "na própria área indicada", "Registro formal."], ["não cumpre os critérios do compliance socioambiental e consequentemente não está apta a ser vinculadas em qualquer operação", "não atende aos critérios de compliance socioambiental e, consequentemente, não está apta a ser vinculada a qualquer operação", "Concordância (“vinculada”, singular), regência (“vinculada a”) e vírgulas."], ["Para regularizar referido passivo é necessário", "Para a regularização do referido passivo, é necessário", "Vírgula após a oração anteposta e uso do artigo."], ["devidamente protocolo junto ao órgão", "devidamente protocolado junto ao órgão", "Erro de digitação/concordância."], ["Licenciamento Ambiental Rural (LAR)", "Licença de Atividade Rural (LAR) – destacado em azul", "A LAR é uma licença, não um “licenciamento” (processo). Confirmar a nomenclatura da SEMAS-PA antes do uso."], ["—", "Referência ao Relatório de Conformidade Ambiental anexo", "Padronização com o Caso 1."], ["assim, não recomendamos negociações com esse produtor, nessa área e em áreas que não cumpram o raio…", "Assim, o bloqueio será mantido, não sendo recomendadas negociações [com este produtor / com esta empresa], nesta área ou em áreas que não respeitem o raio…", "Separação de períodos; linguagem impessoal; demonstrativo adequado; opção PF/PJ; o título dizia “bloqueio mantido”, mas o texto não."], ["LAR VENCIDO (título)", "LAR VENCIDA", "Concordância com “licença”."], ["No intuito de regularizar referido passivo, foi apresentado Licenciamento…, todavia, o documento encontra-se vencido.", "Com o intuito de regularizar o referido passivo, foi apresentada a LAR nº [Nº]; todavia, o documento encontra-se vencido desde [DATA]. + frase sobre o protocolo de renovação", "Pontuação antes de “todavia”; inclusão do nº, da data e da situação do protocolo."], ["conforme dispõe o art. 14… e o art. 18…", "conforme dispõem o art. 14… e o art. 18…", "Concordância com sujeito composto."], ["Desta forma, caso o protocolo…", "Por conseguinte, caso o protocolo…", "Evita repetição de “Dessa forma”; “desta” estava incorreto nesse uso."], ["não tem o condão de retroagir os efeitos de validade da licença vencida", "não tem o condão de restabelecer a validade da licença vencida", "“Retroagir” é intransitivo (não admite objeto)."], ["considerando que existe a restrição ambiental apontada, não tendo sido apresentado documento válido…", "considerando a existência da restrição ambiental apontada e a ausência de documento válido…", "Clareza."], ["não sendo recomendada negociações com este cliente", "não sendo recomendadas negociações [com este produtor / com esta empresa]", "Concordância (plural) e padronização PF/PJ."], ["Caso 5 – PRODES 2025"], ["localizadas em ____", "localizadas no(s) município(s) de [MUNICÍPIO/UF]", "Padronização."], ["desmatamento na base PRODES/INPE em camada de soja", "identificação, na base PRODES/INPE, de desmatamento sobreposto à camada de soja", "Clareza."], ["com ocorrência em período posterior a 2025", "Mantido, destacado em azul", "Confirmar o marco temporal: o título é “PRODES 2025”, mas “posterior a 2025” indica 2026 em diante."], ["Importante destacar que", "É importante destacar que", "Construção completa (registro formal)."], ["não constituindo exigência legal ou obrigação", "não constituindo exigência legal nem obrigação", "Coordenação em frase negativa."]],
+  guiaRapido: [
+    ['Caso', 'Situação', 'Status'],
+    ['A. Aprovado – desbloqueio'],
+    ['1', 'Prospecção ou cadastro de cliente em que nem o CPF/CNPJ nem a área apresentam restrições.', 'Aprovado'],
+    ['2', 'Prospecção em que o CPF/CNPJ tem embargo, mas o embargo está isolado da área de cultivo ou a área de originação fica a mais de 150 km do embargo.', 'Aprovado'],
+    ['3', 'Prospecção em que o CPF/CNPJ está limpo, mas a área tem embargo e os polígonos embargados estão isolados da área de cultivo.', 'Aprovado'],
+    ['4', 'Mesma situação do Caso 2, mas o chamado se refere a uma operação (contrato, hedge ou pedido de insumos).', 'Aprovado'],
+    ['5', 'Mesma situação do Caso 3, mas o chamado se refere a uma operação (contrato, hedge ou pedido de insumos).', 'Aprovado'],
+    ['6', 'A área foi bloqueada por sobreposição com Terra Indígena que ainda não está homologada (status “Declarada”).', 'Aprovado'],
+    ['7', 'O imóvel do cliente está dentro de um assentamento e o bloqueio decorre de embargos de terceiros vinculados ao CAR do assentamento.', 'Aprovado'],
+    ['8', 'Área no Pará com restrição do PVG, em que o cliente apresentou Licenciamento Ambiental Rural (LAR) dentro da validade.', 'Aprovado'],
+    ['B. Desbloqueio excepcional'],
+    ['9', 'A área tem restrição que, em regra, mantém o bloqueio, mas existe contrato ou pedido de insumos já formalizado e em execução.', 'Aprovado (excepcional)'],
+    ['10', 'O CAR da área está suspenso ou cancelado, mas a operação foi formalizada antes do apontamento que gerou o bloqueio.', 'Aprovado (excepcional)'],
+    ['C. Bloqueio mantido'],
+    ['11', 'O CPF/CNPJ não tem restrições, mas as imagens de satélite não comprovam o mínimo de 10% da área destinado ao cultivo de grãos.', 'Bloqueio mantido'],
+    ['12', 'Área no Pará com desmatamento acima do limite do PVG (25 hectares), sem apresentação de documento de regularização.', 'Bloqueio mantido'],
+    ['13', 'Mesma restrição do Caso 12, mas o cliente apresentou LAR vencido, sem protocolo de renovação ou com protocolo fora do prazo legal de 120 dias.', 'Bloqueio mantido'],
+    ['14', 'A área apresenta desmatamento identificado no PRODES/INPE sobreposto à camada de soja.', 'Bloqueio mantido'],
+  ],
 };
