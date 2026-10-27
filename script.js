@@ -3,17 +3,21 @@
 
    Organização:
      1. Utilidades
-     2. Marcação (texto do modelos.js  <->  "runs" com formatação)
-     3. Armazenamento (localStorage: somente os pareceres do analista)
-     4. Biblioteca (carregar, validar, pesquisar, menu lateral)
-     5. Visualização de modelo
-     6. Editor (renderizar, ler, colar, inserir trechos)
-     7. Copiar / .txt / impressão / código do modelo
-     8. Meus pareceres e backup
-     9. Guia
-    10. Interface (abas, diálogos, avisos, atalhos) e inicialização
+     2. Marcação (texto do modelos.js  <->  "runs" com formatação e campos)
+     3. Campos parametrizados (valores, derivados PF/PJ, alternativas)
+     4. Armazenamento (localStorage: somente os pareceres do analista)
+     5. Biblioteca (carregar e validar modelos.js)
+     6. Início (cartões dos modelos)
+     7. Visualização de modelo
+     8. Editor (renderizar, ler, opções, inserir trechos, apagar, limpar)
+     9. Painel "Dados do caso"
+    10. Painel de trechos padronizados
+    11. Documento final: copiar, pré-visualizar, Word, PDF, .txt, código
+    12. Meus pareceres e backup
+    13. Guia
+    14. Interface (abas, diálogos, avisos, atalhos) e inicialização
 
-   A biblioteca (MODELOS, TRECHOS, CATEGORIAS…) vem de modelos.js e é
+   A biblioteca (MODELOS, TRECHOS, CAMPOS…) vem de modelos.js e é
    SOMENTE LEITURA aqui: nenhuma função grava nela.
    ===================================================================== */
 'use strict';
@@ -46,6 +50,7 @@ const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toL
 const uid = () => 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const agoraISO = () => new Date().toISOString();
 const clone = (o) => JSON.parse(JSON.stringify(o));
+const maiuscula = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
 function fmtData(iso) {
   if (!iso) return '—';
@@ -78,23 +83,31 @@ function baixarArquivo(nome, conteudo, tipo) {
 }
 
 /* ===================== 2. Marcação e "runs" ========================
-   Um parágrafo é { tipo: 'p' | 'rotulo', grupo?: 'g1', runs: [...] }.
-   Cada run é { t: texto, b?: negrito, i?: itálico, c?: condicional, v?: validação }.
-   No modelos.js: **negrito**, ==condicional==, !!validação!!            */
+   Um parágrafo é { tipo: 'p' | 'rotulo', runs: [...] } e pode ter:
+     grupo + opcao (opção de um grupo), se (condicional), opcional +
+     incluido, etiqueta (rótulo interno mostrado acima), bloco (rótulos).
+   Cada run é { t: texto, b?, i?, c?, v? } ou um "chip":
+     { campo: 'nome', ph?: 'TEXTO' }   campo parametrizado
+     { escolha: 'e3' }                  alternativa local (parecer.escolhas)
+   No modelos.js: **negrito**, ==condicional==, !!validação!!,
+   {{campo}}, {{campo|TEXTO}}, {{escolha:a|b}}                          */
 const MARCAS = { '**': 'b', '==': 'c', '!!': 'v' };
 const FLAGS = ['b', 'i', 'c', 'v'];
 
 function mkRun(t, f = {}) {
-  const r = { t };
+  const r = { t: t == null ? '' : String(t) };
   for (const k of FLAGS) if (f[k]) r[k] = true;
+  if (f.campo) { r.campo = String(f.campo); if (f.ph) r.ph = String(f.ph); }
+  else if (f.escolha) r.escolha = String(f.escolha);
   return r;
 }
-const mesmoFormato = (a, b) => FLAGS.every((k) => !!a[k] === !!b[k]);
+const ehChip = (r) => !!(r && (r.campo || r.escolha));
+const mesmoFormato = (a, b) => !ehChip(a) && !ehChip(b) && FLAGS.every((k) => !!a[k] === !!b[k]);
 
 function mergeRuns(runs) {
   const out = [];
   for (const r of runs) {
-    if (!r.t) continue;
+    if (!r.t && !ehChip(r)) continue;
     const last = out[out.length - 1];
     if (last && mesmoFormato(last, r)) last.t += r.t;
     else out.push(mkRun(r.t, r));
@@ -102,52 +115,268 @@ function mergeRuns(runs) {
   return out;
 }
 
-function parseMarkup(s) {
-  const runs = [];
-  const st = { b: false, c: false, v: false };
+/** Índice do "}}" que fecha o "{{" em s[i] (considera aninhamento), ou -1. */
+function fimChaves(s, i) {
+  let d = 0;
+  for (let k = i; k < s.length - 1; k++) {
+    if (s[k] === '{' && s[k + 1] === '{') { d++; k++; continue; }
+    if (s[k] === '}' && s[k + 1] === '}') { d--; if (d === 0) return k; k++; }
+  }
+  return -1;
+}
+
+/** Divide por "|" apenas fora de {{ }}. */
+function dividirTopo(s) {
+  const out = [];
+  let d = 0;
   let buf = '';
-  const push = () => { if (buf) { runs.push(mkRun(buf, st)); buf = ''; } };
+  for (let k = 0; k < s.length; k++) {
+    const two = s.substr(k, 2);
+    if (two === '{{') { d++; buf += two; k++; continue; }
+    if (two === '}}') { d--; buf += two; k++; continue; }
+    if (s[k] === '|' && d === 0) { out.push(buf); buf = ''; continue; }
+    buf += s[k];
+  }
+  out.push(buf);
+  return out;
+}
+
+/** Quebra a marcação em tokens: texto, marca (negrito…), campo, escolha. */
+function tokenize(s) {
+  s = String(s == null ? '' : s);
+  const out = [];
+  let buf = '';
+  const push = () => { if (buf) { out.push({ tipo: 'texto', t: buf }); buf = ''; } };
   for (let i = 0; i < s.length;) {
     const two = s.substr(i, 2);
-    if (own(MARCAS, two)) { push(); st[MARCAS[two]] = !st[MARCAS[two]]; i += 2; continue; }
-    buf += s[i]; i++;
+    if (two === '{{') {
+      const j = fimChaves(s, i);
+      if (j > 0) {
+        push();
+        const dentro = s.slice(i + 2, j);
+        if (dentro.startsWith('escolha:')) out.push({ tipo: 'escolha', opcoes: dividirTopo(dentro.slice(8)) });
+        else {
+          const [campo, ph] = dividirTopo(dentro);
+          out.push({ tipo: 'campo', campo: campo.trim(), ph: ph ? ph.trim() : '' });
+        }
+        i = j + 2;
+        continue;
+      }
+    }
+    if (own(MARCAS, two)) { push(); out.push({ tipo: 'marca', k: MARCAS[two] }); i += 2; continue; }
+    buf += s[i];
+    i++;
   }
   push();
-  return runs;
+  return out;
+}
+
+/** Texto da marcação com os campos como no Word: [CAMPO] (ou CAMPO dentro de alternativas). */
+function textoPlano(s, bare = false) {
+  return tokenize(s).map((tk) => {
+    if (tk.tipo === 'texto') return tk.t;
+    if (tk.tipo === 'campo') { const ph = phDe(tk.campo, tk.ph); return bare ? ph : '[' + ph + ']'; }
+    if (tk.tipo === 'escolha') return '[' + tk.opcoes.map((o) => textoPlano(o, true)).join(' / ') + ']';
+    return '';
+  }).join('');
+}
+
+/**
+ * Converte marcação em runs. Alternativas ({{escolha:…}}) são registradas
+ * no parecer P (P.escolhas), cada uma com um id próprio.
+ */
+function parseMarkup(s, P) {
+  const runs = [];
+  const st = { b: false, c: false, v: false };
+  let antes = '';
+  for (const tk of tokenize(s)) {
+    if (tk.tipo === 'marca') { st[tk.k] = !st[tk.k]; continue; }
+    if (tk.tipo === 'texto') { runs.push(mkRun(tk.t, st)); antes += tk.t; continue; }
+    if (tk.tipo === 'campo') { runs.push(mkRun('', { ...st, campo: tk.campo, ph: tk.ph })); antes += phDe(tk.campo, tk.ph); continue; }
+    const id = novaEscolha(P, tk.opcoes, antes.replace(/\s+/g, ' ').trim().slice(-60));
+    runs.push(mkRun('', { ...st, escolha: id }));
+    antes += '[…]';
+  }
+  return mergeRuns(runs);
+}
+
+function novaEscolha(P, opcoes, contexto) {
+  P.seq = (P.seq || 0) + 1;
+  const id = 'e' + P.seq;
+  P.escolhas[id] = { opcoes: opcoes.map(String), valor: null, contexto: contexto || '' };
+  return id;
+}
+
+function novoGrupo(P, def) {
+  P.seq = (P.seq || 0) + 1;
+  const id = 'g' + P.seq;
+  P.grupos[id] = {
+    nome: String(def.grupo || 'Opções'),
+    instrucao: String(def.instrucao || ''),
+    multipla: !!def.multipla,
+    opcoes: def.opcoes.map((o, i) => (typeof o === 'string' ? 'Opção ' + (i + 1) : String(o.rotulo || 'Opção ' + (i + 1)))),
+    escolhidas: [],
+  };
+  return id;
 }
 
 /** Converte runs de volta para a marcação do modelos.js (itálico não existe lá). */
-function runsToMarkup(runs) {
+function runsToMarkup(runs, P) {
   let out = '';
   const st = { b: false, c: false, v: false };
   for (const r of runs) {
     for (const [m, k] of [['!!', 'v'], ['==', 'c'], ['**', 'b']]) {
       if (!!r[k] !== st[k]) { out += m; st[k] = !!r[k]; }
     }
-    out += r.t;
+    if (r.campo) out += '{{' + r.campo + (r.ph ? '|' + r.ph : '') + '}}';
+    else if (r.escolha) {
+      const e = P.escolhas[r.escolha];
+      out += e ? '{{escolha:' + e.opcoes.join('|') + '}}' : r.t;
+    } else out += r.t;
   }
   for (const [m, k] of [['**', 'b'], ['==', 'c'], ['!!', 'v']]) if (st[k]) out += m;
   return out;
 }
 
 const runsText = (runs) => runs.map((r) => r.t).join('');
-const stripMarkup = (s) => s.replace(/\*\*|==|!!/g, '');
 
-/** Converte um modelo da biblioteca em parágrafos editáveis (cópia; o modelo não muda). */
-function modeloParaParagrafos(modelo) {
+/** Converte um modelo (ou trecho) da biblioteca em parágrafos editáveis do parecer P. */
+function modeloParaParagrafos(modelo, P) {
   const pars = [];
-  let g = 0;
   for (const item of modelo.paragrafos || []) {
-    if (typeof item === 'string') pars.push({ tipo: 'p', runs: parseMarkup(item) });
+    if (typeof item === 'string') pars.push({ tipo: 'p', runs: parseMarkup(item, P) });
     else if (item && Array.isArray(item.opcoes)) {
-      g++;
-      for (const op of item.opcoes) pars.push({ tipo: 'p', grupo: 'g' + g, runs: parseMarkup(String(op)) });
-    } else if (item && item.rotulo != null) pars.push({ tipo: 'rotulo', runs: [mkRun(String(item.rotulo))] });
+      const gid = novoGrupo(P, item);
+      item.opcoes.forEach((op, i) => {
+        const texto = typeof op === 'string' ? op : op.texto;
+        const par = { tipo: 'p', grupo: gid, opcao: i, runs: parseMarkup(String(texto || ''), P) };
+        par.etiqueta = P.grupos[gid].opcoes[i];
+        pars.push(par);
+      });
+    } else if (item && item.se) {
+      pars.push({ tipo: 'p', se: String(item.se), etiqueta: String(item.rotulo || 'Condicional'), runs: parseMarkup(item.texto, P) });
+    } else if (item && item.opcional) {
+      pars.push({ tipo: 'p', opcional: String(item.opcional), etiqueta: String(item.opcional), incluido: !!item.incluido, runs: parseMarkup(item.texto, P) });
+    } else if (item && item.rotulo != null) {
+      const par = { tipo: 'rotulo', runs: [mkRun(String(item.rotulo))] };
+      if (item.bloco) par.bloco = Number(item.bloco);
+      pars.push(par);
+    }
   }
   return pars;
 }
 
-/* ================ 3. Armazenamento (localStorage) ====================
+/* ================= 3. Campos parametrizados ======================== */
+const LISTA_CAMPOS = typeof CAMPOS !== 'undefined' && Array.isArray(CAMPOS) ? CAMPOS : [];
+const CAMPO_POR_ID = new Map(LISTA_CAMPOS.map((c) => [c.id, c]));
+const DERIV = typeof DERIVADOS !== 'undefined' ? DERIVADOS : {};
+const STATUS_LISTA = typeof STATUS !== 'undefined' && Array.isArray(STATUS) ? STATUS : [];
+const ORDEM_GRUPOS = typeof GRUPOS_CAMPOS !== 'undefined' ? GRUPOS_CAMPOS : [...new Set(LISTA_CAMPOS.map((c) => c.grupo))];
+/** Parecer vazio usado para mostrar textos fora de um parecer (visualizações). */
+const novoContexto = () => ({ dados: {}, escolhas: {}, grupos: {}, seq: 0 });
+
+/** Campo "de verdade" por trás de um derivado (Sujeito, doc… vêm de tipoPessoa). */
+const campoBase = (id) => (DERIV[id] ? DERIV[id].de : id);
+
+function phDe(campo, ph) {
+  if (ph) return ph;
+  if (DERIV[campo]) return DERIV[campo].ph;
+  const c = CAMPO_POR_ID.get(campo);
+  return c ? c.ph : String(campo).toUpperCase();
+}
+
+function rotuloCampo(id) {
+  const base = campoBase(id);
+  const c = CAMPO_POR_ID.get(base);
+  return c ? c.rotulo : base;
+}
+
+/** Valor a escrever no parecer ('' se vazio). */
+function valorCampo(id, P) {
+  const dados = (P && P.dados) || {};
+  const d = DERIV[id];
+  if (d) { const v = dados[d.de]; return v === 'PF' || v === 'PJ' ? d[v] : ''; }
+  const v = String(dados[id] == null ? '' : dados[id]).trim();
+  if (!v) return '';
+  const c = CAMPO_POR_ID.get(id);
+  if (c && Array.isArray(c.opcoes)) {
+    const o = c.opcoes.find((x) => typeof x === 'object' && x.valor === v);
+    if (o) return o.texto;
+  }
+  return v;
+}
+
+/** Resolve uma marcação com os valores do parecer (sem formatação). */
+function resolverTexto(s, P, bare) {
+  return tokenize(s).map((tk) => {
+    if (tk.tipo === 'texto') return tk.t;
+    if (tk.tipo === 'campo') { const v = valorCampo(tk.campo, P); const ph = phDe(tk.campo, tk.ph); return v || (bare ? ph : '[' + ph + ']'); }
+    if (tk.tipo === 'escolha') return textoPlano('{{escolha:' + tk.opcoes.join('|') + '}}');
+    return '';
+  }).join('');
+}
+
+/** Texto que um chip mostra (e que sai no parecer). */
+function textoChip(r, P) {
+  if (r.campo) return valorCampo(r.campo, P) || '[' + phDe(r.campo, r.ph) + ']';
+  const e = P && P.escolhas ? P.escolhas[r.escolha] : null;
+  if (!e) return r.t || '';
+  if (e.valor == null || e.opcoes[e.valor] == null) return '[' + e.opcoes.map((o) => resolverTexto(o, P, true)).join(' / ') + ']';
+  return resolverTexto(e.opcoes[e.valor], P, false);
+}
+
+function chipPendente(r, P) {
+  if (r.campo) return !valorCampo(r.campo, P);
+  const e = P && P.escolhas ? P.escolhas[r.escolha] : null;
+  if (!e) return false;
+  if (e.valor == null || e.opcoes[e.valor] == null) return true;
+  return tokenize(e.opcoes[e.valor]).some((tk) => tk.tipo === 'campo' && !valorCampo(tk.campo, P));
+}
+
+/** Campos (base) que um chip usa — uma alternativa usa os campos de todas as suas opções. */
+function camposDoChip(r, P) {
+  if (r.campo) return [campoBase(r.campo)];
+  const e = P && P.escolhas ? P.escolhas[r.escolha] : null;
+  if (!e) return [];
+  return e.opcoes.flatMap((o) => tokenize(o).filter((tk) => tk.tipo === 'campo').map((tk) => campoBase(tk.campo)));
+}
+
+function camposDosParagrafos(pars, P) {
+  const s = new Set();
+  for (const par of pars) {
+    for (const r of par.runs || []) camposDoChip(r, P).forEach((c) => s.add(c));
+    if (par.se) s.add(campoBase(par.se.split('=')[0]));
+  }
+  return s;
+}
+
+/** Visibilidade de um parágrafo: 'on' (sai), 'off' (não sai) ou 'pendente' (sai, falta decidir). */
+function visibilidade(par, P) {
+  if (par.grupo && par.opcao != null && P.grupos && P.grupos[par.grupo]) {
+    const g = P.grupos[par.grupo];
+    if (!g.escolhidas.length) return 'pendente';
+    return g.escolhidas.includes(par.opcao) ? 'on' : 'off';
+  }
+  if (par.se) {
+    const [campo, valor] = par.se.split('=');
+    const v = String((P.dados || {})[campo] || '');
+    if (!v) return 'pendente';
+    return v === valor ? 'on' : 'off';
+  }
+  if (par.opcional) return par.incluido ? 'on' : 'off';
+  return 'on';
+}
+
+/** Valores iniciais: "padrao" dos campos usados + "padroes" do modelo. */
+function aplicarPadroes(P, pars, padroes) {
+  for (const id of camposDosParagrafos(pars, P)) {
+    const c = CAMPO_POR_ID.get(id);
+    if (c && c.padrao && !P.dados[id]) P.dados[id] = c.padrao;
+  }
+  for (const [k, v] of Object.entries(padroes || {})) if (!P.dados[k]) P.dados[k] = String(v);
+}
+
+/* ================ 4. Armazenamento (localStorage) ====================
    Guarda SOMENTE os pareceres em elaboração do analista. A biblioteca
    vem de modelos.js. Para um backend futuro, troque a implementação
    destes métodos mantendo a mesma interface.                          */
@@ -155,7 +384,6 @@ const Store = {
   KEY: 'psa.pareceres.v1',
   UI: 'psa.ui.v1',
   disponivel: true,
-  _avisado: false,
 
   testar() {
     try {
@@ -192,7 +420,7 @@ const Store = {
   },
 
   gravarTodos(lista) {
-    if (!this.disponivel) { this._erro('O armazenamento do navegador está indisponível. Use “Baixar .txt” ou o backup para não perder o trabalho.'); return false; }
+    if (!this.disponivel) { this._erro('O armazenamento do navegador está indisponível. Exporte o parecer (Word/PDF) ou use o backup para não perder o trabalho.'); return false; }
     try {
       localStorage.setItem(this.KEY, JSON.stringify(lista));
       return true;
@@ -236,9 +464,31 @@ function validarParecer(p) {
     p.paragrafos.every((par) => par && Array.isArray(par.runs) && par.runs.every((r) => r && typeof r.t === 'string'));
 }
 
-/** Reconstrói um parecer só com campos conhecidos (evita dados estranhos vindos de arquivos). */
+/**
+ * Reconstrói um parecer só com campos conhecidos (evita dados estranhos vindos
+ * de arquivos) e completa os campos novos em pareceres da versão anterior.
+ */
 function limparParecer(p) {
   const str = (v) => (typeof v === 'string' ? v : '');
+  const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+  const dados = {};
+  for (const [k, v] of Object.entries(obj(p.dados))) if (typeof v === 'string') dados[k] = v;
+  const escolhas = {};
+  for (const [k, e] of Object.entries(obj(p.escolhas))) {
+    if (e && Array.isArray(e.opcoes)) escolhas[k] = { opcoes: e.opcoes.map(String), valor: Number.isInteger(e.valor) ? e.valor : null, contexto: str(e.contexto) };
+  }
+  const grupos = {};
+  for (const [k, g] of Object.entries(obj(p.grupos))) {
+    if (g && Array.isArray(g.opcoes)) {
+      grupos[k] = {
+        nome: str(g.nome), instrucao: str(g.instrucao), multipla: !!g.multipla, opcoes: g.opcoes.map(String),
+        escolhidas: Array.isArray(g.escolhidas) ? g.escolhidas.filter(Number.isInteger) : [],
+      };
+    }
+  }
+  // seq precisa ficar acima de todos os ids já usados (e1, g2…)
+  let seq = Number.isInteger(p.seq) ? p.seq : 0;
+  for (const k of [...Object.keys(escolhas), ...Object.keys(grupos)]) { const n = parseInt(k.slice(1), 10); if (n > seq) seq = n; }
   return {
     id: p.id,
     modeloId: str(p.modeloId),
@@ -247,18 +497,45 @@ function limparParecer(p) {
     paragrafos: p.paragrafos.map((par) => {
       const o = { tipo: par.tipo === 'rotulo' ? 'rotulo' : 'p', runs: mergeRuns(par.runs.map((r) => mkRun(r.t, r))) };
       if (typeof par.grupo === 'string' && par.grupo) o.grupo = par.grupo;
+      if (Number.isInteger(par.opcao)) o.opcao = par.opcao;
+      if (typeof par.se === 'string' && par.se) o.se = par.se;
+      if (typeof par.opcional === 'string' && par.opcional) { o.opcional = par.opcional; o.incluido = !!par.incluido; }
+      if (typeof par.etiqueta === 'string' && par.etiqueta) o.etiqueta = par.etiqueta;
+      if (Number.isInteger(par.bloco)) o.bloco = par.bloco;
       return o;
     }),
+    dados, escolhas, grupos, seq,
+    status: str(p.status),
+    // pareceres da versão anterior não tinham cabeçalho
+    cabecalho: p.cabecalho === undefined ? false : !!p.cabecalho,
     criadoEm: str(p.criadoEm) || agoraISO(),
     atualizadoEm: str(p.atualizadoEm) || agoraISO(),
     bibliotecaVersao: str(p.bibliotecaVersao),
   };
 }
 
-/* ======================= 4. Biblioteca ============================== */
+/* ======================= 5. Biblioteca ============================== */
 const LIB = { modelos: [], porId: new Map(), categorias: [], trechos: [], problemas: [], versao: '' };
 
 const MARKER_RE = /\[\[([^\[\]]+)\]\]|\[([^\[\]]+)\]/g;
+
+/** Confere se os campos citados num texto existem em CAMPOS. */
+function conferirCampos(s, onde) {
+  const ver = (texto) => {
+    for (const tk of tokenize(texto)) {
+      if (tk.tipo === 'campo' && !DERIV[tk.campo] && !CAMPO_POR_ID.has(tk.campo)) LIB.problemas.push(`${onde}: campo inexistente “${tk.campo}”.`);
+      if (tk.tipo === 'escolha') tk.opcoes.forEach(ver);
+    }
+  };
+  ver(s);
+}
+
+function textosDoItem(it) {
+  if (typeof it === 'string') return [it];
+  if (it && Array.isArray(it.opcoes)) return it.opcoes.map((o) => (typeof o === 'string' ? o : String(o.texto || '')));
+  if (it && (it.se || it.opcional)) return [String(it.texto || '')];
+  return [];
+}
 
 /** Lê e confere o conteúdo de modelos.js. Problemas viram avisos no Guia. */
 function carregarBiblioteca() {
@@ -279,7 +556,9 @@ function carregarBiblioteca() {
     if (!m || typeof m.id !== 'string' || !m.id) { LIB.problemas.push('Modelo sem "id": ' + (m && m.titulo ? m.titulo : '(sem título)')); continue; }
     if (LIB.porId.has(m.id)) { LIB.problemas.push('Id repetido em modelos.js: "' + m.id + '" (só o primeiro foi carregado).'); continue; }
     if (!catIds.has(m.categoria)) LIB.problemas.push('Modelo "' + m.id + '" usa categoria inexistente: "' + m.categoria + '".');
+    if (m.status && !STATUS_LISTA.some((s) => s.id === m.status)) LIB.problemas.push('Modelo "' + m.id + '" usa status inexistente: "' + m.status + '".');
     if (!Array.isArray(m.paragrafos)) { LIB.problemas.push('Modelo "' + m.id + '" sem lista "paragrafos".'); continue; }
+    m.paragrafos.forEach((it, i) => { if (it === undefined) LIB.problemas.push(`Modelo "${m.id}": parágrafo ${i + 1} vazio (chave inexistente em TX?).`); else textosDoItem(it).forEach((t) => conferirCampos(t, 'Modelo "' + m.id + '"')); });
     const cat = LIB.categorias.find((c) => c.id === m.categoria);
     const corpo = textoDoModelo(m);
     m._cat = cat ? cat.nome : (m.categoria || 'Sem categoria');
@@ -294,7 +573,10 @@ function carregarBiblioteca() {
   for (const t of Array.isArray(trechos) ? trechos : []) {
     if (!t || !t.id || tIds.has(t.id) || (typeof t.texto !== 'string' && !Array.isArray(t.paragrafos))) { LIB.problemas.push('Trecho inválido ou repetido: ' + (t && t.id)); continue; }
     tIds.add(t.id);
-    t._busca = norm([t.titulo, t.categoria, t.fonte, textoDoTrecho(t)].join(' '));
+    (Array.isArray(t.paragrafos) ? t.paragrafos.flatMap(textosDoItem) : [t.texto]).forEach((s) => conferirCampos(s, 'Trecho "' + t.id + '"'));
+    t._blocos = Array.isArray(t.blocos) ? t.blocos.map(Number) : [];
+    t._grupo = t.categoria || nomeBloco(t._blocos[0]) || 'Outros';
+    t._busca = norm([t.titulo, t._grupo, t.fonte, textoDoTrecho(t)].join(' '));
     LIB.trechos.push(t);
   }
   LIB.problemas.forEach((p) => console.warn('[modelos.js]', p));
@@ -302,23 +584,28 @@ function carregarBiblioteca() {
 
 function textoDoModelo(m) {
   return (m.paragrafos || []).map((it) => {
-    if (typeof it === 'string') return stripMarkup(it);
-    if (it && Array.isArray(it.opcoes)) return it.opcoes.map((o) => stripMarkup(String(o))).join('\n');
+    if (typeof it === 'string') return textoPlano(it);
+    if (it && Array.isArray(it.opcoes)) return it.opcoes.map((o) => (typeof o === 'string' ? textoPlano(o) : o.rotulo + '\n' + textoPlano(o.texto))).join('\n');
+    if (it && (it.se || it.opcional)) return textoPlano(it.texto);
     if (it && it.rotulo) return String(it.rotulo);
     return '';
   }).join('\n');
 }
 
+/** Blocos da estrutura padrão (GUIA.estrutura), por número. */
+function nomeBloco(n) {
+  const linhas = typeof GUIA !== 'undefined' && Array.isArray(GUIA.estrutura) ? GUIA.estrutura.slice(1) : [];
+  const l = linhas.find((x) => Number(x[0]) === Number(n));
+  if (!l) return '';
+  return Number(n) === 1 || Number(n) === 2 ? '1 e 2 – Identificação e situação da área' : `${l[0]} – ${l[1]}`;
+}
+
 /** Parágrafos de um trecho: "texto" (um parágrafo) ou "paragrafos" (vários, como nos modelos). */
-function paragrafosDoTrecho(t) {
-  return Array.isArray(t.paragrafos) ? modeloParaParagrafos(t) : [{ tipo: 'p', runs: parseMarkup(t.texto) }];
+function paragrafosDoTrecho(t, P) {
+  return Array.isArray(t.paragrafos) ? modeloParaParagrafos(t, P) : [{ tipo: 'p', runs: parseMarkup(t.texto, P) }];
 }
 function textoDoTrecho(t) {
-  return Array.isArray(t.paragrafos) ? textoDoModelo(t) : stripMarkup(t.texto);
-}
-/** Texto que entra no parecer (sem rótulos internos), para copiar. */
-function textoFinalDoTrecho(t) {
-  return paragrafosDoTrecho(t).filter((p) => p.tipo === 'p').map((p) => runsText(p.runs)).join('\n\n');
+  return Array.isArray(t.paragrafos) ? textoDoModelo(t) : textoPlano(t.texto);
 }
 
 /** Retorna os termos de busca normalizados. */
@@ -368,201 +655,121 @@ function trechoEncontrado(texto, ts) {
   return '';
 }
 
-function filtrarTrechos(q, cat) {
-  const ts = termos(q);
-  return LIB.trechos.filter((t) => (!cat || t.categoria === cat) && ts.every((x) => t._busca.includes(x)));
+/* =================== 6. Início (cartões dos modelos) ================ */
+const statusDe = (id) => STATUS_LISTA.find((s) => s.id === id) || null;
+
+/** "CASO 1 – ANÁLISE…" -> ['Caso 1', 'ANÁLISE…'] */
+function partesTitulo(titulo) {
+  const m = /^(CASO\s+\d+)\s*[–-]\s*(.*)$/i.exec(titulo || '');
+  return m ? ['Caso ' + m[1].replace(/\D+/g, ''), m[2]] : ['', titulo || ''];
 }
 
-/* ---- Menu lateral: categorias suspensas com os modelos ---- */
-
-function menuAbertos() {
-  const v = Store.ui('menuAberto');
-  return new Set(Array.isArray(v) ? v : []);
-}
-
-function alternarBloco(id) {
-  const abertos = menuAbertos();
-  if (abertos.has(id)) abertos.delete(id); else abertos.add(id);
-  Store.ui('menuAberto', [...abertos]);
-  renderMenu();
-}
-
-/** Monta um bloco suspenso (acordeão). Durante a busca, abre os blocos com resultado. */
-function blocoMenu(id, nome, total, achados, conteudo, buscando, abertos) {
-  if (buscando && !achados) return null;
-  const aberto = buscando || abertos.has(id);
-  const head = el('button', { type: 'button', class: 'acc-head', 'aria-expanded': String(aberto) },
-    el('span', { class: 'acc-arrow', 'aria-hidden': 'true', text: aberto ? '▾' : '▸' }),
-    el('span', { class: 'acc-name', text: nome }),
-    el('span', { class: 'count', text: buscando ? `${achados}/${total}` : String(total) }));
-  if (!buscando) head.addEventListener('click', () => alternarBloco(id));
-  const body = el('div', { class: 'acc-body' }, conteudo);
-  body.hidden = !aberto;
-  return el('section', { class: 'acc' + (aberto ? ' open' : '') }, head, body);
-}
-
-function itemModelo(m, ts, ativo) {
-  const titulo = el('button', { type: 'button', class: 'acc-title', title: m.quandoUsar ? 'Quando usar: ' + m.quandoUsar : m.titulo }, ...realcar(m.titulo, ts));
-  titulo.addEventListener('click', () => abrirModeloDoMenu(m.id));
-  const ver = el('button', { type: 'button', class: 'acc-eye', title: 'Visualizar sem abrir', 'aria-label': 'Visualizar ' + m.titulo, text: '👁︎' });
-  ver.addEventListener('click', () => visualizarModelo(m.id));
+function cartaoModelo(m, ts) {
+  const st = statusDe(m.status);
+  const [caso, resto] = partesTitulo(m.titulo);
   let trecho = null;
-  if (ts.length && !ts.every((t) => norm(m.titulo).includes(t))) {
+  if (ts.length && !ts.every((t) => norm(m.titulo + ' ' + (m.quandoUsar || '')).includes(t))) {
     const sn = trechoEncontrado(m._corpo, ts);
-    if (sn) trecho = el('div', { class: 'acc-snip' }, ...realcar(sn, ts));
+    if (sn) trecho = el('p', { class: 'mc-snip' }, ...realcar(sn, ts));
   }
-  return el('div', { class: 'acc-item' + (m.id === ativo ? ' active' : '') }, el('div', { class: 'acc-row' }, titulo, ver), trecho);
+  const ver = el('button', { type: 'button', class: 'btn btn-small', title: 'Ver o texto sem abrir', text: '👁︎ Ver texto' });
+  ver.addEventListener('click', (e) => { e.stopPropagation(); visualizarModelo(m.id); });
+  const usar = el('button', { type: 'button', class: 'btn btn-small btn-primary', text: 'Usar modelo' });
+  usar.addEventListener('click', (e) => { e.stopPropagation(); usarModelo(m.id); });
+  const card = el('article', { class: 'model-card' + (st ? ' st-' + st.cor : ''), tabindex: '0', role: 'button', 'aria-label': 'Usar o modelo ' + m.titulo },
+    el('div', { class: 'mc-top' },
+      st ? el('span', { class: 'badge badge-' + st.cor, text: st.nome }) : el('span', { class: 'badge', text: 'MODELO-BASE' }),
+      caso ? el('span', { class: 'mc-caso', text: caso }) : null,
+      m.subcategoria ? el('span', { class: 'mc-sub', text: m.subcategoria }) : null),
+    el('h3', { class: 'mc-title' }, ...realcar(resto, ts)),
+    m.quandoUsar ? el('p', { class: 'mc-use' }, ...realcar(maiuscula(m.quandoUsar), ts)) : null,
+    trecho,
+    el('div', { class: 'mc-foot' }, ver, usar));
+  card.addEventListener('click', () => usarModelo(m.id));
+  card.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target === card) usarModelo(m.id); });
+  return card;
 }
 
-function renderMenu() {
-  const nav = $('#menu-modelos');
-  nav.replaceChildren();
+function renderInicio() {
+  const box = $('#home-modelos');
+  box.replaceChildren();
   if (!LIB.modelos.length) {
-    nav.append(el('p', { class: 'hint', text: 'A biblioteca não foi carregada. Verifique se o arquivo modelos.js está na mesma pasta do index.html.' }));
+    box.append(el('p', { class: 'hint', text: 'A biblioteca não foi carregada. Verifique se o arquivo modelos.js está na mesma pasta do index.html.' }));
     return;
   }
-  const ts = termos(state.busca);
-  const buscando = ts.length > 0;
-  const abertos = menuAbertos();
-  const ativo = state.parecer ? state.parecer.modeloId : '';
-  let nModelos = 0;
-
+  const ts = termos(state.buscaInicio);
+  let total = 0;
   for (const c of LIB.categorias) {
-    const todos = LIB.modelos.filter((m) => m.categoria === c.id);
-    const vis = todos.filter((m) => ts.every((t) => m._busca.includes(t)));
-    nModelos += vis.length;
-    const nos = [];
-    let sub = null;
-    for (const m of vis) {
-      const s2 = m.subcategoria || '';
-      if (s2 !== sub) {
-        if (s2) nos.push(el('div', { class: 'acc-sub', text: s2 }));
-        else if (nos.length) nos.push(el('div', { class: 'acc-sub', text: 'Demais casos' }));
-        sub = s2;
-      }
-      nos.push(itemModelo(m, ts, ativo));
-    }
-    const b = blocoMenu(c.id, c.nome, todos.length, vis.length, nos, buscando, abertos);
-    if (b) nav.append(b);
+    const vis = LIB.modelos.filter((m) => m.categoria === c.id && ts.every((t) => m._busca.includes(t)));
+    if (!vis.length) continue;
+    total += vis.length;
+    box.append(el('section', { class: 'cat' },
+      el('h2', { class: 'cat-title' }, c.nome, el('span', { class: 'count', text: ' ' + vis.length })),
+      c.descricao ? el('p', { class: 'cat-desc', text: c.descricao }) : null,
+      el('div', { class: 'model-grid' }, vis.map((m) => cartaoModelo(m, ts)))));
+  }
+  $('#home-resumo').textContent = ts.length
+    ? (total ? `${total} modelo(s) para “${state.buscaInicio.trim()}”. Enter abre o primeiro.` : `Nenhum modelo encontrado para “${state.buscaInicio.trim()}”.`)
+    : '';
+  renderRecentes();
+}
+
+/** Cartão "Continuar" do Início e lista da tela vazia do Editor. */
+function renderRecentes() {
+  const recentes = Store.listar()
+    .sort((a, b) => String(b.atualizadoEm).localeCompare(String(a.atualizadoEm)))
+    .slice(0, 4);
+  const card = $('#home-recent');
+  card.replaceChildren(el('span', { class: 'start-icon', 'aria-hidden': 'true', text: '↻' }), el('strong', { text: 'Continuar um parecer' }));
+  if (!recentes.length) card.append(el('span', { text: 'Os pareceres que você salvar aparecem aqui.' }));
+  else {
+    card.append(el('ul', { class: 'recent-list' }, recentes.map((p) => el('li', {},
+      el('button', { type: 'button', class: 'link', onclick: () => abrirParecer(limparParecer(clone(p))) }, p.titulo || p.modeloTitulo || '(sem identificação)'),
+      el('span', { class: 'hint', text: ' · ' + fmtData(p.atualizadoEm) })))),
+    el('button', { type: 'button', class: 'link', 'data-goto': 'pareceres', text: 'Ver todos' }));
   }
 
-  $('#menu-resumo').textContent = buscando
-    ? (nModelos ? `${nModelos} parecer(es) para “${state.busca.trim()}”` : `Nenhum parecer encontrado para “${state.busca.trim()}”.`)
-    : '';
+  const box = $('#start-recent');
+  box.replaceChildren();
+  if (recentes.length) {
+    box.append(el('h3', { text: 'Continuar um parecer salvo' }),
+      el('table', { class: 'table' }, el('tbody', {}, recentes.map((p) => el('tr', {},
+        el('td', {}, el('strong', { text: p.titulo || '(sem identificação)' })),
+        el('td', { text: p.modeloTitulo || '—' }),
+        el('td', { text: fmtData(p.atualizadoEm) }),
+        el('td', { class: 'actions' }, el('button', { class: 'btn btn-small btn-primary', onclick: () => abrirParecer(limparParecer(clone(p))) }, 'Abrir')))))));
+  }
 }
 
-function abrirModeloDoMenu(id) {
-  fecharGaveta();
-  usarModelo(id);
-}
-
-/* ---- Painel direito: trechos reutilizáveis (só com parecer aberto) ---- */
-function renderTrechosPainel() {
-  const sel = $('#tr-cat');
-  const cats = [...new Set(LIB.trechos.map((t) => t.categoria))];
-  sel.replaceChildren(el('option', { value: '', text: 'Todas as categorias' }), ...cats.map((c) => el('option', { value: c, text: c })));
-  const lista = () => {
-    const ul = $('#tr-list');
-    ul.replaceChildren();
-    const q = $('#tr-search').value;
-    const ts = termos(q);
-    const itens = filtrarTrechos(q, sel.value);
-    let cat = null;
-    for (const t of itens) {
-      if (t.categoria !== cat && !sel.value) { ul.append(el('li', { class: 'tr-cat', text: t.categoria })); cat = t.categoria; }
-      const tx = el('div', { class: 'tx' });
-      paragrafosDoTrecho(t).filter((x) => x.tipo === 'p').forEach((x, i) => { if (i) tx.append(' ¶ '); appendRuns(tx, x.runs, { realce: ts }); });
-      const ins = el('button', { type: 'button', class: 'btn btn-small btn-primary', text: 'Inserir' });
-      // mousedown sem foco: preserva a posição do cursor no editor
-      ins.addEventListener('mousedown', (e) => e.preventDefault());
-      ins.addEventListener('click', () => inserirTrecho(t));
-      const ver = el('button', { type: 'button', class: 'btn btn-small', text: 'Ver tudo' });
-      ver.addEventListener('mousedown', (e) => e.preventDefault());
-      ver.addEventListener('click', () => visualizarTrecho(t));
-      ul.append(el('li', { class: 'tr-item' },
-        el('div', { class: 'tt' }, ...realcar(t.titulo, ts)),
-        el('div', { class: 'src', text: 'Fonte: ' + (t.fonte || '—') }),
-        tx, el('div', { class: 'row' }, ins, ver)));
-    }
-    if (!itens.length) ul.append(el('li', { class: 'hint', text: 'Nenhum trecho encontrado.' }));
-  };
-  $('#tr-search').addEventListener('input', debounce(lista, 120));
-  sel.addEventListener('change', lista);
-  lista();
-}
-
-/** Mostra ou esconde o painel de trechos (preferência guardada no navegador). */
-function recolherTrechos(recolher) {
-  const painel = $('#tr-panel');
-  painel.classList.toggle('recolhido', recolher);
-  $('#editor-wrap').classList.toggle('tr-recolhido', recolher);
-  const b = $('#btn-tr-toggle');
-  b.textContent = recolher ? '«' : '»';
-  b.title = recolher ? 'Mostrar trechos reutilizáveis' : 'Recolher painel de trechos';
-  b.setAttribute('aria-expanded', String(!recolher));
-  $('#tr-body').hidden = recolher;
-  Store.ui('trechosRecolhido', recolher);
-}
-
-async function visualizarTrecho(t) {
-  const doc = el('div', { class: 'doc-render' }, paragrafosDoTrecho(t).map(parParaElemento));
-  const r = await abrirDialogo({
-    titulo: t.titulo,
-    corpo: [el('div', { class: 'meta' }, el('span', { class: 'chip', text: t.categoria }), ' Fonte: ' + (t.fonte || '—')), doc],
-    acoes: [{ label: 'Fechar', value: 'fechar' }, { label: 'Copiar', value: 'copiar' }].concat(state.parecer ? [{ label: 'Inserir no parecer', value: 'inserir', cls: 'btn-primary' }] : []),
-  });
-  if (r === 'copiar') copiarTexto(textoFinalDoTrecho(t), 'Trecho copiado.');
-  if (r === 'inserir') inserirTrecho(t);
-}
-
-/** Recolhe ou mostra o menu lateral de pareceres padrão (preferência guardada no navegador). */
-function recolherMenu(recolher) {
-  $('#sidebar').classList.toggle('recolhido', recolher);
-  $('#view-editor').classList.toggle('side-recolhido', recolher);
-  const b = $('#btn-side-toggle');
-  b.textContent = recolher ? '»' : '«';
-  b.title = recolher ? 'Mostrar menu de pareceres' : 'Recolher menu de pareceres';
-  b.setAttribute('aria-expanded', String(!recolher));
-  Store.ui('menuRecolhido', recolher);
-}
-
-/* gaveta do menu em telas pequenas */
-function abrirGaveta() {
-  document.body.classList.add('side-open');
-  $('#sidebar-backdrop').hidden = false;
-  $('#btn-sidebar').setAttribute('aria-expanded', 'true');
-}
-function fecharGaveta() {
-  document.body.classList.remove('side-open');
-  $('#sidebar-backdrop').hidden = true;
-  $('#btn-sidebar').setAttribute('aria-expanded', 'false');
-}
-
-/* =================== 5. Visualização de modelo ===================== */
+/* =================== 7. Visualização de modelo ===================== */
 function renderModeloDoc(m) {
+  const P = novoContexto();
+  const pars = modeloParaParagrafos(m, P);
   const doc = el('div', { class: 'doc-render' });
-  for (const it of m.paragrafos || []) {
-    if (typeof it === 'string') {
-      const p = el('p');
-      appendRuns(p, parseMarkup(it));
-      doc.append(p);
-    } else if (it && Array.isArray(it.opcoes)) {
-      const box = el('div', { class: 'opt-box' }, el('div', { class: 'opt-label', text: 'Opções — manter a(s) aplicável(is)' }));
-      for (const o of it.opcoes) { const p = el('p', { class: 'opt-par' }); appendRuns(p, parseMarkup(String(o))); box.append(p); }
-      doc.append(box);
-    } else if (it && it.rotulo) {
-      doc.append(el('p', { class: 'rotulo', text: it.rotulo }));
+  let caixa = null;
+  let grupoAtual = null;
+  for (const par of pars) {
+    if (par.grupo !== grupoAtual) {
+      caixa = null;
+      grupoAtual = par.grupo || null;
+      if (grupoAtual) {
+        const g = P.grupos[grupoAtual];
+        caixa = el('div', { class: 'opt-box' }, el('div', { class: 'opt-label', text: g.nome + ' — ' + (g.instrucao || 'escolha a opção aplicável') }));
+        doc.append(caixa);
+      }
     }
+    const p = parParaElemento(par, P);
+    (caixa || doc).append(p);
   }
   return doc;
 }
 
 function blocoOrientacoes(m) {
   const nos = [];
-  if (m.quandoUsar) nos.push(el('div', { class: 'box box-use' }, el('h4', { text: m.categoria === 'base' ? 'Como usar' : 'Quando usar' }), el('p', { text: m.quandoUsar })));
+  if (m.quandoUsar) nos.push(el('div', { class: 'box box-use' }, el('h4', { text: m.categoria === 'base' ? 'Como usar' : 'Quando usar' }), el('p', { text: maiuscula(m.quandoUsar) })));
   for (const o of m.obs || []) nos.push(el('div', { class: 'box box-obs' }, el('h4', { text: 'Obs.' }), el('p', { text: o })));
   if (m._pend && m._pend.length) {
-    nos.push(el('div', { class: 'box box-warn' }, el('h4', { text: 'Pendências do Word (validação humana)' }),
+    nos.push(el('div', { class: 'box box-warn' }, el('h4', { text: 'Pendências para validação humana' }),
       el('ul', {}, m._pend.map((p) => el('li', { text: p.descricao })))));
   }
   return nos;
@@ -571,12 +778,13 @@ function blocoOrientacoes(m) {
 async function visualizarModelo(id) {
   const m = LIB.porId.get(id);
   if (!m) return;
+  const st = statusDe(m.status);
   const r = await abrirDialogo({
     titulo: m.titulo,
     corpo: [
-      el('div', { class: 'meta' }, el('span', { class: 'chip', text: m._cat }), ' ', m.subcategoria ? el('span', { class: 'chip', text: m.subcategoria }) : null),
+      el('div', { class: 'meta' }, el('span', { class: 'chip', text: m._cat }), ' ', st ? el('span', { class: 'badge badge-' + st.cor, text: st.nome }) : null),
       ...blocoOrientacoes(m),
-      el('p', { class: 'hint', text: 'Orientações acima são internas e não entram no parecer. Abaixo, o texto-base do modelo:' }),
+      el('p', { class: 'hint', text: 'Orientações acima são internas e não entram no parecer. Abaixo, o texto-base do modelo (campos em destaque são preenchidos no painel “Dados do caso”):' }),
       renderModeloDoc(m),
     ],
     acoes: [{ label: 'Fechar', value: 'fechar' }, { label: 'Usar este modelo', value: 'usar', cls: 'btn-primary' }],
@@ -584,19 +792,20 @@ async function visualizarModelo(id) {
   if (r === 'usar') usarModelo(id);
 }
 
-/* ============================ 6. Editor ============================= */
+/* ============================ 8. Editor ============================= */
 const state = {
-  view: 'editor',
-  busca: '',
+  view: 'inicio',
+  buscaInicio: '',
   parecer: null,
   dirty: false,
   lastRange: null,
 };
 
-/** Insere runs em um contêiner como nós seguros (marcadores [..] realçados). */
+/** Insere runs em um contêiner como nós seguros (chips e marcadores [..] realçados). */
 function appendRuns(container, runs, opts = {}) {
+  const P = opts.P || state.parecer || novoContexto();
   for (const r of runs) {
-    let nos = textoComMarcadores(r.t, opts);
+    let nos = ehChip(r) ? [chipEl(r, P)] : textoComMarcadores(r.t, opts);
     const envolver = (tag, cls) => { const e = document.createElement(tag); if (cls) e.className = cls; e.append(...nos); nos = [e]; };
     if (r.v) envolver('span', 'valid');
     if (r.c) envolver('span', 'cond');
@@ -604,6 +813,30 @@ function appendRuns(container, runs, opts = {}) {
     if (r.b) envolver('b');
     container.append(...nos);
   }
+}
+
+function chipEl(r, P) {
+  const s = el('span', {
+    class: 'campo' + (r.escolha ? ' escolha' : '') + (chipPendente(r, P) ? ' vazio' : ''),
+    contenteditable: 'false',
+    text: textoChip(r, P),
+  });
+  if (r.campo) {
+    s.dataset.campo = r.campo;
+    if (r.ph) s.dataset.ph = r.ph;
+    s.title = rotuloCampo(r.campo) + ' — clique para preencher no painel “Dados do caso” (duplo clique: converter em texto)';
+  } else {
+    s.dataset.escolha = r.escolha;
+    s.title = 'Alternativa — clique para escolher no painel “Dados do caso” (duplo clique: converter em texto)';
+  }
+  return s;
+}
+
+/** Lê o chip de volta como run (a partir dos atributos do elemento). */
+function runDoChip(span, f = {}) {
+  return span.dataset.campo
+    ? mkRun(span.textContent, { ...f, campo: span.dataset.campo, ph: span.dataset.ph })
+    : mkRun(span.textContent, { ...f, escolha: span.dataset.escolha });
 }
 
 function textoComMarcadores(t, opts = {}) {
@@ -628,19 +861,42 @@ function textoComMarcadores(t, opts = {}) {
   return nos;
 }
 
-function parParaElemento(par) {
+function parParaElemento(par, P) {
   const p = document.createElement('p');
-  if (par.tipo === 'rotulo') { p.className = 'rotulo'; p.title = 'Rótulo interno do modelo — não é incluído no parecer final'; }
+  if (par.tipo === 'rotulo') {
+    p.className = 'rotulo';
+    p.title = 'Rótulo interno — não é incluído no parecer final';
+    if (par.bloco) p.dataset.bloco = String(par.bloco);
+  }
   if (par.grupo) p.dataset.grupo = par.grupo;
-  appendRuns(p, par.runs);
+  if (par.opcao != null) p.dataset.opcao = String(par.opcao);
+  if (par.se) p.dataset.se = par.se;
+  if (par.opcional) { p.dataset.opcional = par.opcional; p.dataset.incluido = par.incluido ? '1' : '0'; }
+  if (par.etiqueta) p.dataset.etiqueta = par.etiqueta;
+  appendRuns(p, par.runs, { P });
   if (!p.childNodes.length) p.append(document.createElement('br'));
   return p;
 }
 
+/** Parágrafo (só os atributos) a partir do elemento na tela. */
+function parDoElemento(node) {
+  const d = node.dataset || {};
+  const par = { tipo: node.classList && node.classList.contains('rotulo') ? 'rotulo' : 'p' };
+  if (d.grupo) par.grupo = d.grupo;
+  if (d.opcao != null && d.opcao !== '') par.opcao = Number(d.opcao);
+  if (d.se) par.se = d.se;
+  if (d.opcional) { par.opcional = d.opcional; par.incluido = d.incluido === '1'; }
+  if (d.etiqueta) par.etiqueta = d.etiqueta;
+  if (d.bloco) par.bloco = Number(d.bloco);
+  return par;
+}
+
 function renderEditor() {
   const ed = $('#editor');
-  ed.replaceChildren(...state.parecer.paragrafos.map(parParaElemento));
-  if (!ed.childNodes.length) ed.append(parParaElemento({ tipo: 'p', runs: [] }));
+  ed.replaceChildren(...state.parecer.paragrafos.map((par) => parParaElemento(par, state.parecer)));
+  if (!ed.childNodes.length) ed.append(parParaElemento({ tipo: 'p', runs: [] }, state.parecer));
+  aplicarVisibilidade();
+  renderCabecalhoDoc();
   state.lastRange = null;
 }
 
@@ -655,8 +911,8 @@ function lerEditor() {
   for (const node of ed.childNodes) {
     if (node.nodeType === 1 && BLOCOS.has(node.tagName)) {
       fecharSolto();
-      const par = { tipo: node.classList.contains('rotulo') ? 'rotulo' : 'p', runs: [] };
-      if (node.dataset && node.dataset.grupo) par.grupo = node.dataset.grupo;
+      const par = parDoElemento(node);
+      par.runs = [];
       coletarRuns(node, {}, par.runs);
       par.runs = mergeRuns(par.runs);
       pars.push(par);
@@ -675,11 +931,12 @@ function lerEditor() {
 function coletarRuns(node, f, out) {
   const filhos = Array.from(node.childNodes);
   filhos.forEach((ch, idx) => {
-    if (ch.nodeType === 3) { if (ch.textContent) out.push(mkRun(ch.textContent.replace(/ /g, ' '), f)); return; }
+    if (ch.nodeType === 3) { if (ch.textContent) out.push(mkRun(ch.textContent.replace(/ /g, ' '), f)); return; }
     if (ch.nodeType !== 1) return;
     const tag = ch.tagName;
     if (tag === 'BR') { if (idx < filhos.length - 1) out.push(mkRun('\n', f)); return; }
     if (tag === 'SCRIPT' || tag === 'STYLE') return;
+    if (ch.classList && ch.classList.contains('campo') && (ch.dataset.campo || ch.dataset.escolha)) { out.push(runDoChip(ch, f)); return; }
     const nf = { ...f };
     if (tag === 'B' || tag === 'STRONG') nf.b = true;
     if (tag === 'I' || tag === 'EM') nf.i = true;
@@ -699,6 +956,64 @@ function sincronizar() {
   if (state.parecer) state.parecer.paragrafos = lerEditor();
 }
 
+/** Mostra/oculta opções, condicionais e opcionais conforme as escolhas do painel. */
+function aplicarVisibilidade() {
+  const P = state.parecer;
+  for (const node of $('#editor').children) {
+    const v = visibilidade(parDoElemento(node), P);
+    node.classList.toggle('oculto', v === 'off');
+    node.classList.toggle('opt-pend', v === 'pendente');
+  }
+}
+
+/** Atualiza os chips na tela depois de mudar um campo ou uma alternativa (sem perder as edições livres). */
+function atualizarCampos() {
+  const P = state.parecer;
+  if (!P) return;
+  for (const s of $$('#editor .campo')) {
+    const r = runDoChip(s);
+    s.textContent = textoChip(r, P);
+    s.classList.toggle('vazio', chipPendente(r, P));
+  }
+  aplicarVisibilidade();
+  renderCabecalhoDoc();
+  atualizarPendencias();
+  marcarAlterado();
+}
+
+/* ---- Cabeçalho do parecer (bloco 0) ---- */
+function usaArea(P) {
+  const usados = camposNoEditor();
+  return ['car', 'municipio', 'municipioPA'].some((c) => usados.has(c) || (P.dados && P.dados[c]));
+}
+
+/** Linhas do cabeçalho: [rótulo, texto, pendente]. */
+function cabecalhoLinhas(P) {
+  const st = statusDe(P.status);
+  const linhas = [['Status', st ? st.nome : '[STATUS DA ANÁLISE]', !st]];
+  const nome = valorCampo('nome', P);
+  const doc = valorCampo('doc', P);
+  const num = valorCampo('docNumero', P);
+  linhas.push(['Cliente', `${nome || '[NOME / RAZÃO SOCIAL]'} – ${doc || 'CPF/CNPJ'} nº ${num || '[Nº DO CPF/CNPJ]'}`, !nome || !doc || !num]);
+  if (usaArea(P)) {
+    const car = valorCampo('car', P);
+    const mpa = valorCampo('municipioPA', P);
+    const mun = valorCampo('municipio', P) || (mpa ? mpa + '/PA' : '');
+    linhas.push(['Área', `CAR nº ${car || '[Nº DO CAR]'} – ${mun || '[MUNICÍPIO/UF]'}`, !car || !mun]);
+  }
+  if (st && st.condicao) linhas.push(['Condição', maiuscula(st.condicao), false]);
+  return linhas;
+}
+
+function renderCabecalhoDoc() {
+  const box = $('#doc-cabecalho');
+  const P = state.parecer;
+  box.hidden = !P || !P.cabecalho;
+  if (box.hidden) { box.replaceChildren(); return; }
+  box.replaceChildren(el('table', {}, el('tbody', {}, cabecalhoLinhas(P).map(([k, v, pend]) =>
+    el('tr', {}, el('th', { text: k }), el('td', { class: pend ? 'vazio' : '' }, k === 'Status' ? el('strong', { text: v }) : v))))));
+}
+
 function abrirParecer(p, { manterView = false } = {}) {
   if (!p) return;
   if (state.parecer && state.dirty) salvarParecer({ silencioso: true });
@@ -709,59 +1024,54 @@ function abrirParecer(p, { manterView = false } = {}) {
   $('#editor-wrap').hidden = false;
   $('#doc-title').value = p.titulo || '';
   renderEditor();
+  renderDados();
   renderMeta();
   $('#btn-restore').disabled = !p.modeloId;
   Store.ui('ultimo', p.id);
-  renderMenu();
   setStatus(Store.obter(p.id) ? 'ok' : '', Store.obter(p.id) ? 'Salvo em ' + fmtData(p.atualizadoEm) : 'Novo parecer (ainda não salvo)');
   if (!manterView) setView('editor');
+}
+
+function novoParecerBase(extra) {
+  const agora = agoraISO();
+  return {
+    id: uid(), modeloId: '', modeloTitulo: '', titulo: '', paragrafos: [],
+    dados: {}, escolhas: {}, grupos: {}, seq: 0, status: '', cabecalho: true,
+    criadoEm: agora, atualizadoEm: agora, bibliotecaVersao: LIB.versao,
+    ...extra,
+  };
 }
 
 function usarModelo(id) {
   const m = LIB.porId.get(id);
   if (!m) return toast('Modelo não encontrado.', 'err');
-  const agora = agoraISO();
   const anterior = state.parecer && Store.obter(state.parecer.id) ? state.parecer : null;
-  abrirParecer({
-    id: uid(),
-    modeloId: m.id,
-    modeloTitulo: m.titulo,
-    titulo: '',
-    paragrafos: modeloParaParagrafos(m),
-    criadoEm: agora,
-    atualizadoEm: agora,
-    bibliotecaVersao: LIB.versao,
-  });
-  toast(anterior ? 'Modelo carregado. O parecer anterior foi salvo em Meus pareceres.' : 'Modelo carregado. O texto-base da biblioteca não é alterado.', 'ok', 4000);
-  $('#editor').focus();
+  const P = novoParecerBase({ modeloId: m.id, modeloTitulo: m.titulo, status: m.status || '' });
+  P.paragrafos = modeloParaParagrafos(m, P);
+  aplicarPadroes(P, P.paragrafos, m.padroes);
+  abrirParecer(P);
+  toast(anterior ? 'Modelo carregado. O parecer anterior foi salvo em Meus pareceres.' : 'Modelo carregado. Preencha os dados do caso no painel à esquerda.', 'ok', 4000);
+  const primeiro = $('#dados-body input, #dados-body select, #dados-body .seg button');
+  if (primeiro && !$('#dados-panel').classList.contains('recolhido')) primeiro.focus();
 }
 
 /**
- * Novo parecer sem modelo. Com estrutura: os blocos da seção 2 do Word
+ * Novo parecer sem modelo. "blocos": os blocos 1 a 7 da estrutura padrão
  * (GUIA.estrutura) entram como rótulos internos, que não saem no parecer.
  */
-function novoParecerEmBranco(comEstrutura) {
-  const agora = agoraISO();
-  const paragrafos = [];
-  if (comEstrutura) {
+function novoParecer(modo) {
+  const P = novoParecerBase({ modeloTitulo: modo === 'blocos' ? 'Parecer montado por blocos' : 'Parecer em branco' });
+  if (modo === 'blocos') {
     const linhas = (typeof GUIA !== 'undefined' && Array.isArray(GUIA.estrutura) ? GUIA.estrutura : []).slice(1);
     for (const [num, bloco] of linhas) {
-      if (!bloco) continue;
-      paragrafos.push({ tipo: 'rotulo', runs: [mkRun(`${num} – ${bloco}`)] });
-      paragrafos.push({ tipo: 'p', runs: [] });
+      if (!bloco || Number(num) === 0) continue;
+      P.paragrafos.push({ tipo: 'rotulo', bloco: Number(num), runs: [mkRun(`${num} – ${bloco}`)] });
+      P.paragrafos.push({ tipo: 'p', runs: [] });
     }
   }
-  if (!paragrafos.length) paragrafos.push({ tipo: 'p', runs: [] });
-  abrirParecer({
-    id: uid(),
-    modeloId: '',
-    modeloTitulo: comEstrutura ? 'Parecer em branco – estrutura padrão' : 'Parecer em branco',
-    titulo: '',
-    paragrafos,
-    criadoEm: agora,
-    atualizadoEm: agora,
-    bibliotecaVersao: LIB.versao,
-  });
+  if (!P.paragrafos.length) P.paragrafos.push({ tipo: 'p', runs: [] });
+  abrirParecer(P);
+  if (modo === 'blocos') { recolherTrechos(false); $('#tr-seguir').checked = true; Store.ui('trSeguir', true); }
   // cursor no primeiro parágrafo editável
   const ed = $('#editor');
   const alvo = $$('p', ed).find((x) => !x.classList.contains('rotulo'));
@@ -777,8 +1087,8 @@ function novoParecerEmBranco(comEstrutura) {
   }
 }
 
-/** Fecha o parecer aberto (salvando antes) e volta para "Começar um parecer". */
-function fecharParecer({ salvar = true } = {}) {
+/** Fecha o parecer aberto (salvando antes) e volta para o Início. */
+function fecharParecer({ salvar = true, irPara = 'inicio' } = {}) {
   if (state.parecer && salvar) salvarParecer({ silencioso: true });
   autoSalvar.cancel();
   state.parecer = null;
@@ -787,27 +1097,7 @@ function fecharParecer({ salvar = true } = {}) {
   $('#editor-empty').hidden = false;
   Store.ui('ultimo', null);
   setStatus('', '');
-  renderEditorVazio();
-  renderMenu();
-}
-
-/** Tela "Começar um parecer": lista os pareceres salvos mais recentes. */
-function renderEditorVazio() {
-  const box = $('#start-recent');
-  box.replaceChildren();
-  const recentes = Store.listar()
-    .sort((a, b) => String(b.atualizadoEm).localeCompare(String(a.atualizadoEm)))
-    .slice(0, 5);
-  if (!recentes.length) return;
-  box.append(
-    el('h3', { text: 'Continuar um parecer salvo' }),
-    el('table', { class: 'table' }, el('tbody', {}, recentes.map((p) => el('tr', {},
-      el('td', {}, el('strong', { text: p.titulo || '(sem identificação)' })),
-      el('td', { text: p.modeloTitulo || '—' }),
-      el('td', { text: fmtData(p.atualizadoEm) }),
-      el('td', { class: 'actions' }, el('button', { class: 'btn btn-small btn-primary', onclick: () => abrirParecer(clone(p)) }, 'Abrir')))))),
-    el('p', {}, el('button', { class: 'link', 'data-goto': 'pareceres', text: 'Ver todos os pareceres' })),
-  );
+  if (irPara) setView(irPara);
 }
 
 function renderMeta() {
@@ -820,6 +1110,7 @@ function renderMeta() {
 /** Chamado a cada alteração do texto pelo analista. */
 function aoEditar() {
   marcarAlterado();
+  atualizarPendencias();
 }
 
 function marcarAlterado() {
@@ -863,14 +1154,16 @@ function closestBloco(node) {
 /** Insere um trecho na posição do cursor sem apagar nada do que já existe. */
 function inserirTrecho(t) {
   if (!state.parecer) return toast('Abra um parecer para inserir trechos.', 'warn');
+  const P = state.parecer;
   const ed = $('#editor');
-  const pars = paragrafosDoTrecho(t);
+  const pars = paragrafosDoTrecho(t, P);
+  aplicarPadroes(P, pars);
   const runs = pars[0].runs;
-  const varios = pars.length > 1;
+  const varios = pars.length > 1 || !!(pars[0].grupo || pars[0].se || pars[0].opcional || pars[0].tipo === 'rotulo');
   // novos parágrafos; "inserido" aponta para o primeiro e "ultimo" para o último
   let ultimo = null;
-  const novos = () => { const els = pars.map(parParaElemento); ultimo = els[els.length - 1]; return els; };
-  let range = state.lastRange && ed.contains(state.lastRange.startContainer) ? state.lastRange.cloneRange() : null;
+  const novos = () => { const els = pars.map((x) => parParaElemento(x, P)); ultimo = els[els.length - 1]; return els; };
+  const range = state.lastRange && ed.contains(state.lastRange.startContainer) ? state.lastRange.cloneRange() : null;
   let inserido;
   if (!range) {
     const els = novos(); inserido = els[0];
@@ -880,12 +1173,12 @@ function inserirTrecho(t) {
     range.collapse(false);
     const bloco = closestBloco(range.startContainer);
     if (!bloco) { const els = novos(); inserido = els[0]; ed.append(...els); }
-    else if (!bloco.textContent.trim()) { const els = novos(); inserido = els[0]; bloco.replaceWith(...els); }
+    else if (!bloco.textContent.trim() && !bloco.classList.contains('rotulo')) { const els = novos(); inserido = els[0]; bloco.replaceWith(...els); }
     else {
       const antes = document.createRange(); antes.selectNodeContents(bloco); antes.setEnd(range.startContainer, range.startOffset);
       const depois = document.createRange(); depois.selectNodeContents(bloco); depois.setStart(range.startContainer, range.startOffset);
-      // trecho de vários parágrafos no meio de uma frase: entra logo após o parágrafo atual
-      if (!depois.toString().trim() || varios) { const els = novos(); inserido = els[0]; bloco.after(...els); }
+      // trecho de vários parágrafos (ou cursor num rótulo): entra logo após o parágrafo atual
+      if (!depois.toString().trim() || varios || bloco.classList.contains('rotulo')) { const els = novos(); inserido = els[0]; bloco.after(...els); }
       else if (!antes.toString().trim()) { const els = novos(); inserido = els[0]; bloco.before(...els); }
       else {
         const frag = document.createDocumentFragment();
@@ -894,7 +1187,7 @@ function inserirTrecho(t) {
         const rs = runs.map((r) => mkRun(r.t, r));
         if (a && !/\s/.test(a)) rs.unshift(mkRun(' '));
         if (d && !/[\s.,;:]/.test(d)) rs.push(mkRun(' '));
-        appendRuns(frag, rs);
+        appendRuns(frag, rs, { P });
         const fim = frag.lastChild;
         range.insertNode(frag);
         inserido = bloco;
@@ -911,41 +1204,498 @@ function inserirTrecho(t) {
       const r2 = document.createRange(); r2.selectNodeContents(fimEl); r2.collapse(false); state.lastRange = r2;
     }
   }
+  aplicarVisibilidade();
+  renderDados();
   aoEditar();
   toast('Trecho inserido: ' + t.titulo, 'ok', 2500);
 }
 
-/** Desfazer simples para operações automáticas (preencher, remover opções…). */
-function snapshot() { return JSON.stringify(state.parecer.paragrafos); }
+/** Desfazer para operações automáticas (limpar, apagar…): guarda texto e dados. */
+function snapshot() {
+  sincronizar();
+  const P = state.parecer;
+  return JSON.stringify({ paragrafos: P.paragrafos, dados: P.dados, escolhas: P.escolhas, grupos: P.grupos, status: P.status, cabecalho: P.cabecalho });
+}
 function oferecerDesfazer(snap, msg) {
   const id = state.parecer.id;
-  toast(msg, 'ok', 7000, {
+  toast(msg, 'ok', 8000, {
     label: 'Desfazer',
     fn: () => {
       if (!state.parecer || state.parecer.id !== id) return;
-      state.parecer.paragrafos = JSON.parse(snap);
+      Object.assign(state.parecer, JSON.parse(snap));
       renderEditor();
-      marcarAlterado();
+      renderDados();
+      aoEditar();
     },
   });
 }
 
-/* ========= 7. Copiar / .txt / impressão / código do modelo ========== */
-function paragrafosFinais() {
+/** Garante ao menos um parágrafo editável. */
+function garantirParagrafo() {
+  const ed = $('#editor');
+  if (!ed.firstElementChild) ed.replaceChildren(parParaElemento({ tipo: 'p', runs: [] }, state.parecer));
+}
+
+/**
+ * Apaga o texto selecionado. Se a seleção atravessa parágrafos, remove os
+ * parágrafos inteiros envolvidos; sem seleção, remove o parágrafo do cursor.
+ */
+function apagarSelecao() {
+  if (!state.parecer) return;
+  const ed = $('#editor');
+  const sel = getSelection();
+  const range = sel.rangeCount && ed.contains(sel.getRangeAt(0).commonAncestorContainer) ? sel.getRangeAt(0) : state.lastRange;
+  if (!range || !ed.contains(range.commonAncestorContainer)) return toast('Selecione no texto o trecho que deseja apagar.', 'warn');
+  const snap = snapshot();
+  const tocados = Array.from(ed.children).filter((c) => range.intersectsNode(c));
+  let msg;
+  if (range.collapsed) {
+    const bloco = closestBloco(range.startContainer);
+    if (!bloco) return;
+    bloco.remove();
+    msg = 'Parágrafo removido.';
+  } else if (tocados.length > 1) {
+    tocados.forEach((c) => c.remove());
+    msg = `${tocados.length} parágrafos removidos.`;
+  } else {
+    range.deleteContents();
+    msg = 'Trecho apagado.';
+  }
+  garantirParagrafo();
+  state.lastRange = null;
+  renderDados();
+  aoEditar();
+  oferecerDesfazer(snap, msg);
+}
+
+async function limparConteudo() {
+  if (!state.parecer) return;
+  const r = await abrirDialogo({
+    titulo: 'Limpar conteúdo',
+    narrow: true,
+    corpo: [el('p', { text: 'Escolha o que limpar. Você poderá desfazer logo em seguida.' }),
+      el('ul', {}, el('li', {}, el('strong', { text: 'Só o texto: ' }), 'esvazia o parecer e mantém os dados do caso preenchidos.'),
+        el('li', {}, el('strong', { text: 'Texto e dados: ' }), 'esvazia o parecer e apaga também os dados do caso.'))],
+    acoes: [{ label: 'Cancelar', value: 'nao' }, { label: 'Texto e dados', value: 'tudo', cls: 'btn-danger' }, { label: 'Só o texto', value: 'texto', cls: 'btn-primary' }],
+  });
+  if (r !== 'texto' && r !== 'tudo') return;
+  const snap = snapshot();
+  const P = state.parecer;
+  P.paragrafos = [{ tipo: 'p', runs: [] }];
+  P.grupos = {};
+  P.escolhas = {};
+  if (r === 'tudo') P.dados = {};
+  renderEditor();
+  renderDados();
+  aoEditar();
+  $('#editor').focus();
+  oferecerDesfazer(snap, r === 'tudo' ? 'Texto e dados limpos.' : 'Texto limpo.');
+}
+
+/** Converte um chip em texto comum (edição livre daquele ponto). */
+async function converterChip(span) {
+  const ok = await confirmar('Converter em texto editável',
+    `“${span.textContent}” deixará de acompanhar o painel “Dados do caso” e passará a ser texto comum, que você edita diretamente. Continuar?`, 'Converter');
+  if (!ok || !span.isConnected) return;
+  const snap = snapshot();
+  span.replaceWith(...textoComMarcadores(span.textContent));
+  renderDados();
+  aoEditar();
+  oferecerDesfazer(snap, 'Campo convertido em texto.');
+}
+
+/* ===================== 9. Painel "Dados do caso" ===================== */
+/** Campos (base) usados no texto, nas alternativas, nos condicionais e no cabeçalho. */
+function camposNoEditor() {
+  const P = state.parecer;
+  const s = new Set();
+  if (!P) return s;
+  for (const c of $$('#editor .campo')) camposDoChip(runDoChip(c), P).forEach((x) => s.add(x));
+  for (const p of $$('#editor [data-se]')) s.add(campoBase(p.dataset.se.split('=')[0]));
+  return s;
+}
+
+function campoInput(c, P) {
+  const v = P.dados[c.id] || '';
+  let input;
+  if (c.tipo === 'selecao') {
+    input = el('select', {}, el('option', { value: '', text: '— selecione —' }),
+      (c.opcoes || []).map((o) => (typeof o === 'object'
+        ? el('option', { value: o.valor, text: o.valor === o.texto.replace(/[“”]/g, '') ? o.valor : o.texto })
+        : el('option', { value: o, text: o }))));
+    input.value = v;
+  } else {
+    input = el('input', { type: 'text', placeholder: c.tipo === 'data' ? 'dd/mm/aaaa' : c.ph, autocomplete: 'off', spellcheck: c.tipo ? 'false' : 'true' });
+    if (c.tipo === 'numero') input.setAttribute('inputmode', 'decimal');
+    if (c.tipo === 'lista') {
+      const dl = el('datalist', { id: 'dl-' + c.id }, (c.opcoes || []).map((o) => el('option', { value: typeof o === 'object' ? o.valor : o })));
+      input.setAttribute('list', dl.id);
+      input._datalist = dl;
+    }
+    input.value = v;
+  }
+  const field = el('div', { class: 'field' + (v ? '' : ' vazio'), dataset: { campo: c.id } },
+    el('label', {}, el('span', { text: c.rotulo }), c.dica ? el('small', { text: c.dica }) : null),
+    input, input._datalist || null);
+  input.id = 'f-' + c.id;
+  field.querySelector('label').setAttribute('for', input.id);
+  const aoMudar = () => {
+    const val = input.value;
+    if (val.trim()) P.dados[c.id] = val; else delete P.dados[c.id];
+    field.classList.toggle('vazio', !val.trim());
+    atualizarCampos();
+  };
+  input.addEventListener(c.tipo === 'selecao' ? 'change' : 'input', aoMudar);
+  return field;
+}
+
+function seletorPessoa(P) {
+  const atual = P.dados.tipoPessoa || '';
+  const botao = (valor, texto, sub) => {
+    const b = el('button', { type: 'button', class: atual === valor ? 'on' : '', 'aria-pressed': String(atual === valor) },
+      el('strong', { text: texto }), el('small', { text: sub }));
+    b.addEventListener('click', () => {
+      P.dados.tipoPessoa = valor;
+      $$('.seg button', $('#dados-body')).forEach((x) => { const on = x === b; x.classList.toggle('on', on); x.setAttribute('aria-pressed', String(on)); });
+      $('.seg', $('#dados-body')).classList.remove('vazio');
+      atualizarCampos();
+    });
+    return b;
+  };
+  return el('div', { class: 'field', dataset: { campo: 'tipoPessoa' } },
+    el('label', { text: 'O cliente é' }),
+    el('div', { class: 'seg' + (atual ? '' : ' vazio'), role: 'group', 'aria-label': 'Tipo de pessoa' },
+      botao('PF', 'Pessoa física', 'O produtor · CPF'),
+      botao('PJ', 'Pessoa jurídica', 'A empresa · CNPJ')));
+}
+
+function renderDados() {
+  const P = state.parecer;
+  const body = $('#dados-body');
+  body.replaceChildren();
+  if (!P) return;
+  const usados = camposNoEditor();
+  if (P.cabecalho) ['tipoPessoa', 'nome', 'docNumero'].forEach((c) => usados.add(c));
+  const todos = Store.ui('todosCampos') === true;
+
+  // status e cabeçalho
+  const selStatus = el('select', { id: 'f-status' }, el('option', { value: '', text: '— sem status —' }), STATUS_LISTA.map((s) => el('option', { value: s.id, text: s.nome })));
+  selStatus.value = P.status || '';
+  selStatus.addEventListener('change', () => { P.status = selStatus.value; renderCabecalhoDoc(); atualizarPendencias(); marcarAlterado(); });
+  const chkCab = el('input', { type: 'checkbox', id: 'f-cabecalho' });
+  chkCab.checked = !!P.cabecalho;
+  chkCab.addEventListener('change', () => { P.cabecalho = chkCab.checked; renderCabecalhoDoc(); renderDados(); atualizarPendencias(); marcarAlterado(); });
+  body.append(el('fieldset', { class: 'fs' }, el('legend', { text: 'Parecer' }),
+    el('div', { class: 'field' }, el('label', { for: 'f-status', text: 'Status da análise' }), selStatus),
+    el('label', { class: 'check' }, chkCab, ' Incluir cabeçalho (status, cliente e área)')));
+
+  // campos agrupados
+  if (usados.has('tipoPessoa') || todos) body.append(el('fieldset', { class: 'fs' }, el('legend', { text: 'Cliente' }), seletorPessoa(P),
+    LISTA_CAMPOS.filter((c) => c.grupo === 'Cliente' && c.id !== 'tipoPessoa' && (todos || usados.has(c.id))).map((c) => campoInput(c, P))));
+  for (const grupo of ORDEM_GRUPOS) {
+    if (grupo === 'Cliente') continue;
+    const campos = LISTA_CAMPOS.filter((c) => c.grupo === grupo && (todos || usados.has(c.id)));
+    if (!campos.length) continue;
+    body.append(el('fieldset', { class: 'fs' }, el('legend', { text: grupo }), campos.map((c) => campoInput(c, P))));
+  }
+  const alterna = el('button', { type: 'button', class: 'link', text: todos ? 'Mostrar só os campos deste parecer' : `Mostrar todos os campos (${LISTA_CAMPOS.length})` });
+  alterna.addEventListener('click', () => { Store.ui('todosCampos', !todos); renderDados(); });
+  body.append(el('p', { class: 'hint' }, alterna));
+
+  // opções do texto
+  const opcoes = [];
+  const gruposVistos = new Set();
+  for (const node of $$('#editor [data-grupo]')) {
+    const gid = node.dataset.grupo;
+    if (gruposVistos.has(gid) || !P.grupos[gid]) continue;
+    gruposVistos.add(gid);
+    opcoes.push(blocoGrupo(gid, P));
+  }
+  for (const s of $$('#editor .campo[data-escolha]')) {
+    if (P.escolhas[s.dataset.escolha]) opcoes.push(blocoEscolha(s.dataset.escolha, P));
+  }
+  for (const node of $$('#editor [data-opcional]')) {
+    const chk = el('input', { type: 'checkbox' });
+    chk.checked = node.dataset.incluido === '1';
+    chk.addEventListener('change', () => { node.dataset.incluido = chk.checked ? '1' : '0'; aplicarVisibilidade(); aoEditar(); });
+    opcoes.push(el('label', { class: 'check opt-check' }, chk, ' Incluir: ', node.dataset.opcional));
+  }
+  for (const node of $$('#editor [data-se]')) {
+    const [campo, valor] = node.dataset.se.split('=');
+    opcoes.push(el('p', { class: 'hint cond-info', text: `“${node.dataset.etiqueta || 'Parágrafo condicional'}”: sai somente quando ${rotuloCampo(campo)} = ${valor}.` }));
+  }
+  if (opcoes.length) body.append(el('fieldset', { class: 'fs fs-opcoes' }, el('legend', { text: 'Opções do texto' }), opcoes));
+
+  atualizarPendencias();
+}
+
+function blocoGrupo(gid, P) {
+  const g = P.grupos[gid];
+  const nome = 'grp-' + gid;
+  const itens = g.opcoes.map((rot, i) => {
+    const inp = el('input', { type: g.multipla ? 'checkbox' : 'radio', name: nome, value: String(i) });
+    inp.checked = g.escolhidas.includes(i);
+    inp.addEventListener('change', () => {
+      if (g.multipla) g.escolhidas = $$(`input[name="${nome}"]`).filter((x) => x.checked && x.value !== '').map((x) => Number(x.value));
+      else g.escolhidas = [i];
+      aplicarVisibilidade();
+      aoEditar();
+    });
+    return el('label', { class: 'check' }, inp, ' ', rot);
+  });
+  const todas = el('input', { type: g.multipla ? 'checkbox' : 'radio', name: nome, value: '' });
+  todas.checked = !g.escolhidas.length;
+  todas.addEventListener('change', () => {
+    if (!todas.checked) return;
+    g.escolhidas = [];
+    $$(`input[name="${nome}"]`).forEach((x) => { if (x !== todas) x.checked = false; });
+    aplicarVisibilidade();
+    aoEditar();
+  });
+  return el('div', { class: 'opt-group', dataset: { grupoForm: gid } },
+    el('div', { class: 'opt-title', text: g.nome }),
+    g.instrucao ? el('div', { class: 'hint', text: maiuscula(g.instrucao) }) : null,
+    itens,
+    el('label', { class: 'check muted' }, todas, ' Decidir depois (mostrar todas)'));
+}
+
+function blocoEscolha(id, P) {
+  const e = P.escolhas[id];
+  const sel = el('select', {}, el('option', { value: '', text: '— escolher —' }),
+    e.opcoes.map((o, i) => { const t = resolverTexto(o, P, true); return el('option', { value: String(i), text: t.length > 90 ? t.slice(0, 88) + '…' : t, title: t }); }));
+  sel.value = e.valor == null ? '' : String(e.valor);
+  sel.addEventListener('change', () => { e.valor = sel.value === '' ? null : Number(sel.value); atualizarCampos(); });
+  return el('div', { class: 'field escolha-item' + (e.valor == null ? ' vazio' : ''), dataset: { escolhaForm: id } },
+    el('label', { text: e.contexto ? '…' + e.contexto : 'Alternativa' }), sel);
+}
+
+/** Leva o cursor ao campo do painel correspondente a um chip. */
+function focarNoPainel(chip) {
+  recolherDados(false);
+  const body = $('#dados-body');
+  let alvo;
+  if (chip.dataset.escolha) alvo = $(`[data-escolha-form="${chip.dataset.escolha}"]`, body);
+  else alvo = $(`.field[data-campo="${campoBase(chip.dataset.campo)}"]`, body);
+  if (!alvo) { renderDados(); return; }
+  alvo.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  alvo.classList.add('flash');
+  setTimeout(() => alvo.classList.remove('flash'), 1300);
+  const f = $('input, select, button', alvo);
+  if (f) f.focus({ preventScroll: true });
+}
+
+/** Lista do que ainda falta decidir ou preencher. */
+function listarPendencias() {
+  const P = state.parecer;
+  if (!P) return [];
   sincronizar();
   const out = [];
-  for (const par of state.parecer.paragrafos) {
-    if (par.tipo === 'rotulo') continue;
-    const vazio = !runsText(par.runs).trim();
-    if (vazio && (!out.length || out[out.length - 1].vazio)) continue;
-    out.push({ runs: par.runs, vazio });
+  const add = (s) => { if (!out.includes(s)) out.push(s); };
+  if (P.cabecalho) {
+    if (!statusDe(P.status)) add('Status da análise (cabeçalho)');
+    for (const [k, , pend] of cabecalhoLinhas(P)) if (pend && k !== 'Status') add(`Cabeçalho – ${k}`);
   }
-  while (out.length && out[out.length - 1].vazio) out.pop();
-  return out.filter((x) => !x.vazio);
+  const gruposPend = new Set();
+  for (const par of P.paragrafos) {
+    if (par.tipo === 'rotulo') continue;
+    const vis = visibilidade(par, P);
+    if (vis === 'off') continue;
+    if (par.grupo && P.grupos[par.grupo] && !P.grupos[par.grupo].escolhidas.length) gruposPend.add(par.grupo);
+    if (par.se && vis === 'pendente') add(`${rotuloCampo(par.se.split('=')[0])} (define o parágrafo “${par.etiqueta || 'condicional'}”)`);
+    for (const r of par.runs) {
+      if (ehChip(r)) {
+        if (!chipPendente(r, P)) continue;
+        if (r.campo) add(rotuloCampo(r.campo));
+        else {
+          const e = P.escolhas[r.escolha];
+          if (e && e.valor == null) add('Alternativa: …' + (e.contexto || '').slice(-40));
+          else tokenize(e.opcoes[e.valor]).filter((tk) => tk.tipo === 'campo' && !valorCampo(tk.campo, P)).forEach((tk) => add(rotuloCampo(tk.campo)));
+        }
+      } else {
+        MARKER_RE.lastIndex = 0;
+        let m;
+        while ((m = MARKER_RE.exec(r.t))) add('Texto a redigir: ' + (m[0].length > 50 ? m[0].slice(0, 48) + '…]' : m[0]));
+      }
+    }
+  }
+  for (const gid of gruposPend) add(`Opções – ${P.grupos[gid].nome} (nenhuma escolhida)`);
+  return out;
+}
+
+const atualizarPendencias = debounce(() => {
+  const chip = $('#dados-pend');
+  if (!state.parecer) { chip.hidden = true; return; }
+  const n = listarPendencias().length;
+  chip.hidden = !n;
+  chip.textContent = n + (n === 1 ? ' pendência' : ' pendências');
+}, 250);
+
+async function mostrarPendencias() {
+  const lista = listarPendencias();
+  await abrirDialogo({
+    titulo: lista.length ? `Pendências do parecer (${lista.length})` : 'Nenhuma pendência',
+    narrow: true,
+    corpo: [lista.length ? el('ul', { class: 'pend-mini' }, lista.map((x) => el('li', { text: x }))) : el('p', { text: 'Todos os campos e opções foram preenchidos.' })],
+    acoes: [{ label: 'Fechar', value: 'fechar', cls: 'btn-primary' }],
+  });
+}
+
+/** Avisa sobre pendências antes de copiar/exportar. Resolve true para seguir. */
+async function confirmarPendencias(acao) {
+  const lista = listarPendencias();
+  if (!lista.length) return true;
+  const mostrar = lista.slice(0, 12);
+  const r = await abrirDialogo({
+    titulo: `Há ${lista.length} pendência(s)`,
+    narrow: true,
+    corpo: [el('p', { text: `Os itens abaixo ainda não foram preenchidos ou decididos. Se continuar, eles saem entre colchetes no ${acao}.` }),
+      el('ul', { class: 'pend-mini' }, mostrar.map((x) => el('li', { text: x })), lista.length > mostrar.length ? el('li', { text: `… e mais ${lista.length - mostrar.length}` }) : null)],
+    acoes: [{ label: 'Voltar e preencher', value: 'voltar', cls: 'btn-primary' }, { label: 'Continuar mesmo assim', value: 'seguir' }],
+  });
+  return r === 'seguir';
+}
+
+/** Mostra ou esconde o painel de dados (preferência guardada no navegador). */
+function recolherDados(recolher) {
+  $('#dados-panel').classList.toggle('recolhido', recolher);
+  $('#editor-wrap').classList.toggle('dados-recolhido', recolher);
+  const b = $('#btn-dados-toggle');
+  b.textContent = recolher ? '»' : '«';
+  b.title = recolher ? 'Mostrar dados do caso' : 'Recolher painel de dados';
+  b.setAttribute('aria-expanded', String(!recolher));
+  $('#dados-body').hidden = recolher;
+  Store.ui('dadosRecolhido', recolher);
+}
+
+/* ================ 10. Painel de trechos padronizados ================ */
+function filtrarTrechos(q, filtro) {
+  const ts = termos(q);
+  return LIB.trechos.filter((t) => {
+    if (filtro === 'tf' && t.categoria !== 'Trechos fundamentados') return false;
+    if (filtro && filtro !== 'tf' && !t._blocos.includes(Number(filtro))) return false;
+    return ts.every((x) => t._busca.includes(x));
+  });
+}
+
+function renderListaTrechos() {
+  const ul = $('#tr-list');
+  ul.replaceChildren();
+  const q = $('#tr-search').value;
+  const ts = termos(q);
+  const filtro = $('#tr-bloco').value;
+  const itens = filtrarTrechos(q, filtro);
+  let grupo = null;
+  for (const t of itens) {
+    if (t._grupo !== grupo) { ul.append(el('li', { class: 'tr-cat', text: t._grupo })); grupo = t._grupo; }
+    const tx = el('div', { class: 'tx' });
+    const P = state.parecer ? { ...state.parecer, escolhas: {}, grupos: {}, seq: 0 } : novoContexto();
+    paragrafosDoTrecho(t, P).filter((x) => x.tipo === 'p').forEach((x, i) => { if (i) tx.append(' ¶ '); appendRuns(tx, x.runs, { realce: ts, P }); });
+    const ins = el('button', { type: 'button', class: 'btn btn-small btn-primary', text: 'Inserir' });
+    // mousedown sem foco: preserva a posição do cursor no editor
+    ins.addEventListener('mousedown', (e) => e.preventDefault());
+    ins.addEventListener('click', () => inserirTrecho(t));
+    const ver = el('button', { type: 'button', class: 'btn btn-small', text: 'Ver tudo' });
+    ver.addEventListener('mousedown', (e) => e.preventDefault());
+    ver.addEventListener('click', () => visualizarTrecho(t));
+    ul.append(el('li', { class: 'tr-item' + (t.categoria === 'Trechos fundamentados' ? ' tr-novo' : '') },
+      el('div', { class: 'tt' }, ...realcar(t.titulo, ts)),
+      el('div', { class: 'src', text: 'Fonte: ' + (t.fonte || '—') }),
+      tx, el('div', { class: 'row' }, ins, ver)));
+  }
+  if (!itens.length) ul.append(el('li', { class: 'hint', text: 'Nenhum trecho encontrado.' }));
+}
+
+function renderTrechosPainel() {
+  const sel = $('#tr-bloco');
+  const linhas = (typeof GUIA !== 'undefined' && Array.isArray(GUIA.estrutura) ? GUIA.estrutura.slice(1) : []).filter((l) => Number(l[0]) > 0);
+  sel.replaceChildren(el('option', { value: '', text: 'Todos os blocos' }),
+    ...linhas.map((l) => el('option', { value: String(l[0]), text: `Bloco ${l[0]} – ${l[1]}` })),
+    el('option', { value: 'tf', text: '★ Trechos fundamentados (novos)' }));
+  $('#tr-search').addEventListener('input', debounce(renderListaTrechos, 120));
+  sel.addEventListener('change', renderListaTrechos);
+  const seguir = $('#tr-seguir');
+  seguir.checked = Store.ui('trSeguir') !== false;
+  seguir.addEventListener('change', () => Store.ui('trSeguir', seguir.checked));
+  renderListaTrechos();
+}
+
+/** Número do bloco (rótulo anterior) onde está o cursor, ou null. */
+function blocoDoCursor() {
+  const r = state.lastRange;
+  if (!r) return null;
+  let n = closestBloco(r.startContainer);
+  while (n) {
+    if (n.classList && n.classList.contains('rotulo') && n.dataset.bloco) return n.dataset.bloco;
+    n = n.previousElementSibling;
+  }
+  return null;
+}
+
+const seguirBloco = debounce(() => {
+  if (!$('#tr-seguir').checked || !state.parecer) return;
+  const b = blocoDoCursor();
+  if (!b) return;
+  const alvo = b === '2' ? '1' : b;
+  const sel = $('#tr-bloco');
+  if (sel.value !== alvo) { sel.value = alvo; renderListaTrechos(); }
+}, 200);
+
+/** Mostra ou esconde o painel de trechos (preferência guardada no navegador). */
+function recolherTrechos(recolher) {
+  $('#tr-panel').classList.toggle('recolhido', recolher);
+  $('#editor-wrap').classList.toggle('tr-recolhido', recolher);
+  const b = $('#btn-tr-toggle');
+  b.textContent = recolher ? '«' : '»';
+  b.title = recolher ? 'Mostrar trechos padronizados' : 'Recolher painel de trechos';
+  b.setAttribute('aria-expanded', String(!recolher));
+  $('#tr-body').hidden = recolher;
+  Store.ui('trechosRecolhido', recolher);
+}
+
+async function visualizarTrecho(t) {
+  const P = novoContexto();
+  const doc = el('div', { class: 'doc-render' }, paragrafosDoTrecho(t, P).map((x) => parParaElemento(x, P)));
+  const r = await abrirDialogo({
+    titulo: t.titulo,
+    corpo: [el('div', { class: 'meta' }, el('span', { class: 'chip', text: t._grupo }), ' Fonte: ' + (t.fonte || '—')), doc],
+    acoes: [{ label: 'Fechar', value: 'fechar' }].concat(state.parecer ? [{ label: 'Inserir no parecer', value: 'inserir', cls: 'btn-primary' }] : []),
+  });
+  if (r === 'inserir') inserirTrecho(t);
+}
+
+/* ===== 11. Documento final: copiar, pré-visualizar, Word, PDF, .txt ===== */
+/** Parágrafos que saem no parecer: chips resolvidos, sem rótulos nem opções descartadas. */
+function paragrafosFinais() {
+  sincronizar();
+  const P = state.parecer;
+  const out = [];
+  for (const par of P.paragrafos) {
+    if (par.tipo === 'rotulo' || visibilidade(par, P) === 'off') continue;
+    const runs = mergeRuns(par.runs.map((r) => mkRun(ehChip(r) ? textoChip(r, P) : r.t, { b: r.b, i: r.i })));
+    if (!runsText(runs).trim()) continue;
+    out.push({ runs });
+  }
+  return out;
+}
+
+const TITULO_DOC = 'PARECER SOCIOAMBIENTAL';
+
+function documentoFinal() {
+  const P = state.parecer;
+  return {
+    titulo: TITULO_DOC,
+    cabecalho: P.cabecalho ? cabecalhoLinhas(P).map(([k, v]) => [k, v]) : [],
+    paragrafos: paragrafosFinais(),
+    logo: typeof LOGO_PNG !== 'undefined' ? LOGO_PNG : null,
+    rodape: 'Sustentabilidade – Parecer socioambiental · emitido em ' + new Date().toLocaleDateString('pt-BR'),
+  };
 }
 
 function textoFinal() {
-  return paragrafosFinais().map((p) => runsText(p.runs).replace(/[ \t]+$/gm, '')).join('\n\n');
+  const doc = documentoFinal();
+  const cab = doc.cabecalho.map(([k, v]) => `${k}: ${v}`).join('\n');
+  const corpo = doc.paragrafos.map((p) => runsText(p.runs).replace(/[ \t]+$/gm, '')).join('\n\n');
+  return cab ? cab + '\n\n' + corpo : corpo;
 }
 
 function escHtml(s) {
@@ -953,13 +1703,40 @@ function escHtml(s) {
 }
 
 function htmlFinal() {
-  const ps = paragrafosFinais().map((p) => '<p style="margin:0 0 10pt;text-align:justify">' + p.runs.map((r) => {
+  const doc = documentoFinal();
+  const cab = doc.cabecalho.length
+    ? '<table style="border-collapse:collapse;margin:0 0 12pt;font-size:11pt">' + doc.cabecalho.map(([k, v]) =>
+      '<tr><td style="border:1px solid #c7cfd9;background:#e7eef6;padding:3pt 6pt;font-weight:bold;color:#012169">' + escHtml(k) +
+      '</td><td style="border:1px solid #c7cfd9;padding:3pt 6pt">' + (k === 'Status' ? '<b>' + escHtml(v) + '</b>' : escHtml(v)) + '</td></tr>').join('') + '</table>'
+    : '';
+  const ps = doc.paragrafos.map((p) => '<p style="margin:0 0 10pt;text-align:justify">' + p.runs.map((r) => {
     let h = escHtml(r.t).replace(/\n/g, '<br>');
     if (r.i) h = '<i>' + h + '</i>';
     if (r.b) h = '<b>' + h + '</b>';
     return h;
   }).join('') + '</p>');
-  return '<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt">' + ps.join('') + '</div>';
+  return '<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt">' + cab + ps.join('') + '</div>';
+}
+
+/** Documento final como página (pré-visualização e impressão/PDF). */
+function renderDocumentoFinal(doc, { realcarPendencias = false } = {}) {
+  const pagina = el('div', { class: 'doc-final' },
+    el('div', { class: 'df-top' }, el('img', { src: 'assets/adm-logo.png', alt: 'ADM' }), el('span', { text: 'Sustentabilidade' })),
+    el('h1', { text: doc.titulo }));
+  if (doc.cabecalho.length) {
+    pagina.append(el('table', { class: 'df-cab' }, el('tbody', {}, doc.cabecalho.map(([k, v]) => {
+      const td = el('td', {}, ...(realcarPendencias ? textoComMarcadores(v) : [v]));
+      if (k === 'Status') td.style.fontWeight = '700';
+      return el('tr', {}, el('th', { text: k }), td);
+    }))));
+  }
+  for (const p of doc.paragrafos) {
+    const e = el('p');
+    appendRuns(e, p.runs, { semMarcadores: !realcarPendencias });
+    pagina.append(e);
+  }
+  pagina.append(el('div', { class: 'df-rodape', text: doc.rodape }));
+  return pagina;
 }
 
 async function copiarTexto(txt, msg, html) {
@@ -987,30 +1764,54 @@ async function copiarTexto(txt, msg, html) {
 
 function nomeArquivo(ext) {
   const p = state.parecer;
-  const base = p.titulo || p.modeloTitulo || 'parecer';
+  const base = p.titulo || valorCampo('nome', p) || p.modeloTitulo || 'parecer';
   return 'parecer-' + slug(base) + '-' + new Date().toISOString().slice(0, 10) + ext;
 }
 
-function copiarParecer() {
-  if (!state.parecer) return;
-  copiarTexto(textoFinal(), 'Parecer copiado para a área de transferência.', htmlFinal());
-}
+const NOMES_ACAO = { copiar: 'texto copiado', docx: 'arquivo Word', pdf: 'PDF', txt: 'arquivo .txt' };
 
-function baixarTxt() {
+/** Copiar ou exportar, com aviso de pendências (a menos que já confirmado). */
+async function exportar(tipo, { confirmado = false } = {}) {
   if (!state.parecer) return;
-  baixarArquivo(nomeArquivo('.txt'), '﻿' + textoFinal().replace(/\n/g, '\r\n') + '\r\n', 'text/plain;charset=utf-8');
-  toast('Arquivo .txt gerado (texto simples, sem formatação).', 'ok');
+  $$('.menu-list').forEach((m) => { m.hidden = true; });
+  if (!confirmado && !(await confirmarPendencias(NOMES_ACAO[tipo]))) return;
+  if (tipo === 'copiar') copiarTexto(textoFinal(), 'Parecer copiado para a área de transferência.', htmlFinal());
+  else if (tipo === 'txt') {
+    baixarArquivo(nomeArquivo('.txt'), '﻿' + textoFinal().replace(/\n/g, '\r\n') + '\r\n', 'text/plain;charset=utf-8');
+    toast('Arquivo .txt gerado (texto simples, sem formatação).', 'ok');
+  } else if (tipo === 'docx') {
+    try {
+      const bytes = Docx.gerar(documentoFinal());
+      baixarArquivo(nomeArquivo('.docx'), bytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+      toast('Arquivo Word gerado.', 'ok');
+    } catch (e) {
+      console.error(e);
+      toast('Não foi possível gerar o arquivo Word: ' + (e && e.message ? e.message : e), 'err', 8000);
+    }
+  } else if (tipo === 'pdf') imprimir();
 }
 
 function imprimir() {
   if (!state.parecer) return;
-  const area = $('#print-area');
-  area.replaceChildren(...paragrafosFinais().map((p) => {
-    const e = el('p');
-    appendRuns(e, p.runs.map((r) => mkRun(r.t, { b: r.b, i: r.i })), { semMarcadores: true });
-    return e;
-  }));
-  setTimeout(() => window.print(), 50);
+  $('#print-area').replaceChildren(renderDocumentoFinal(documentoFinal()));
+  toast('Na janela de impressão, escolha “Salvar como PDF” como destino.', 'ok', 6000);
+  setTimeout(() => window.print(), 80);
+}
+
+async function preVisualizar() {
+  if (!state.parecer) return;
+  const pend = listarPendencias();
+  const r = await abrirDialogo({
+    titulo: 'Pré-visualização do parecer',
+    largo: true,
+    corpo: [
+      pend.length ? el('div', { class: 'box box-warn' }, el('h4', { text: `${pend.length} pendência(s) — destacadas em amarelo no texto` }),
+        el('ul', {}, pend.slice(0, 8).map((x) => el('li', { text: x })), pend.length > 8 ? el('li', { text: `… e mais ${pend.length - 8}` }) : null)) : null,
+      el('div', { class: 'preview-wrap' }, renderDocumentoFinal(documentoFinal(), { realcarPendencias: true })),
+    ],
+    acoes: [{ label: 'Fechar', value: 'fechar' }, { label: 'Copiar', value: 'copiar' }, { label: 'PDF', value: 'pdf' }, { label: 'Word (.docx)', value: 'docx', cls: 'btn-primary' }],
+  });
+  if (r && r !== 'fechar') exportar(r, { confirmado: true });
 }
 
 /** Gera o bloco de código para colar em modelos.js (a ferramenta NÃO grava na biblioteca). */
@@ -1023,25 +1824,33 @@ async function gerarCodigoModelo() {
   linhas.push('  {');
   linhas.push(`    id: ${J('novo-' + slug(p.titulo || p.modeloTitulo || 'modelo').slice(0, 30))},  // troque por um id único`);
   linhas.push(`    categoria: ${J(m ? m.categoria : (LIB.categorias[0] || {}).id || '')},`);
+  linhas.push(`    status: ${J(p.status || '')},`);
   if (m && m.subcategoria) linhas.push(`    subcategoria: ${J(m.subcategoria)},`);
   linhas.push(`    titulo: ${J(p.titulo || (m ? m.titulo + ' (adaptado)' : 'Novo modelo'))},`);
   if (m && m.quandoUsar) linhas.push(`    quandoUsar: ${J(m.quandoUsar)},`);
   if (m && m.obs && m.obs.length) linhas.push(`    obs: [${m.obs.map(J).join(', ')}],`);
   linhas.push('    paragrafos: [');
   let grupoAtual = null;
+  const fecharGrupo = () => { if (grupoAtual) { linhas.push('      ] },'); grupoAtual = null; } };
   for (const par of p.paragrafos) {
-    const txt = runsToMarkup(par.runs);
-    if (par.grupo !== grupoAtual && grupoAtual) { linhas.push('      ] },'); grupoAtual = null; }
-    if (par.tipo === 'rotulo') { linhas.push(`      { rotulo: ${J(runsText(par.runs))} },`); continue; }
-    if (!runsText(par.runs).trim()) continue;
-    if (par.grupo) {
-      if (grupoAtual !== par.grupo) { linhas.push('      { opcoes: ['); grupoAtual = par.grupo; }
-      linhas.push(`        ${J(txt)},`);
+    const txt = runsToMarkup(par.runs, p);
+    if (par.grupo !== grupoAtual) fecharGrupo();
+    if (par.tipo === 'rotulo') { linhas.push(`      { rotulo: ${J(runsText(par.runs))}${par.bloco ? ', bloco: ' + par.bloco : ''} },`); continue; }
+    if (!runsText(par.runs).trim() && !par.runs.some(ehChip)) continue;
+    if (par.grupo && p.grupos[par.grupo]) {
+      if (grupoAtual !== par.grupo) {
+        const g = p.grupos[par.grupo];
+        linhas.push(`      { grupo: ${J(g.nome)}, instrucao: ${J(g.instrucao)},${g.multipla ? ' multipla: true,' : ''} opcoes: [`);
+        grupoAtual = par.grupo;
+      }
+      linhas.push(`        { rotulo: ${J(par.etiqueta || 'Opção')}, texto: ${J(txt)} },`);
       continue;
     }
+    if (par.se) { linhas.push(`      { se: ${J(par.se)}, rotulo: ${J(par.etiqueta || '')}, texto: ${J(txt)} },`); continue; }
+    if (par.opcional) { linhas.push(`      { opcional: ${J(par.opcional)}, texto: ${J(txt)}, incluido: ${par.incluido ? 'true' : 'false'} },`); continue; }
     linhas.push(`      ${J(txt)},`);
   }
-  if (grupoAtual) linhas.push('      ] },');
+  fecharGrupo();
   linhas.push('    ],');
   linhas.push('  },');
   const codigo = linhas.join('\n');
@@ -1051,7 +1860,7 @@ async function gerarCodigoModelo() {
     titulo: 'Código do modelo para modelos.js',
     corpo: [
       el('p', { text: 'Para transformar este parecer em modelo da biblioteca, quem mantém a ferramenta deve colar o bloco abaixo dentro da lista MODELOS, no arquivo modelos.js, e ajustar id, título e categoria. A ferramenta não altera a biblioteca.' }),
-      el('p', { class: 'hint', text: 'Atenção: os valores já preenchidos (nomes, CPF/CNPJ, CAR…) entram no código como estão. Volte-os para [CAMPOS] antes de usar como modelo.' }),
+      el('p', { class: 'hint', text: 'Os campos do painel saem como {{campo}} (sem os valores deste caso). Textos que foram digitados ou convertidos em texto saem como estão: revise nomes, CPF/CNPJ e CAR antes de usar como modelo.' }),
       ta,
     ],
     acoes: [{ label: 'Fechar', value: 'fechar' }, { label: 'Copiar código', value: 'copiar', cls: 'btn-primary' }],
@@ -1059,50 +1868,52 @@ async function gerarCodigoModelo() {
   if (r === 'copiar') copiarTexto(codigo, 'Código copiado.');
 }
 
-/* ================= 8. Meus pareceres e backup ===================== */
+/* ================= 12. Meus pareceres e backup ===================== */
 function renderPareceres() {
   const box = $('#par-list');
   box.replaceChildren();
   const ts = termos($('#par-search').value);
   const lista = Store.listar()
-    .filter((p) => ts.every((t) => norm(p.titulo + ' ' + p.modeloTitulo + ' ' + p.paragrafos.map((x) => runsText(x.runs)).join(' ')).includes(t)))
+    .filter((p) => ts.every((t) => norm(p.titulo + ' ' + p.modeloTitulo + ' ' + Object.values(p.dados || {}).join(' ') + ' ' + p.paragrafos.map((x) => runsText(x.runs)).join(' ')).includes(t)))
     .sort((a, b) => String(b.atualizadoEm).localeCompare(String(a.atualizadoEm)));
   if (!lista.length) {
-    box.append(el('p', { class: 'empty', text: ts.length ? 'Nenhum parecer encontrado.' : 'Nenhum parecer salvo ainda. Escolha um modelo no menu lateral do Editor para começar.' }));
+    box.append(el('p', { class: 'empty', text: ts.length ? 'Nenhum parecer encontrado.' : 'Nenhum parecer salvo ainda. Escolha um modelo no Início para começar.' }));
     return;
   }
   const tb = el('tbody');
   for (const p of lista) {
     const aberto = state.parecer && state.parecer.id === p.id;
+    const st = statusDe(p.status);
     tb.append(el('tr', {},
-      el('td', {}, el('strong', { text: p.titulo || '(sem identificação)' }), aberto ? el('span', { class: 'chip chip-word', text: 'aberto', style: 'margin-left:6px' }) : null),
+      el('td', {}, el('strong', { text: p.titulo || (p.dados && p.dados.nome) || '(sem identificação)' }), aberto ? el('span', { class: 'chip chip-word', text: 'aberto', style: 'margin-left:6px' }) : null),
+      el('td', {}, st ? el('span', { class: 'badge badge-' + st.cor, text: st.nome }) : '—'),
       el('td', { text: p.modeloTitulo || '—' }),
       el('td', { text: fmtData(p.atualizadoEm) }),
       el('td', { class: 'actions' },
-        el('button', { class: 'btn btn-small btn-primary', onclick: () => abrirParecer(clone(p)) }, 'Abrir'),
+        el('button', { class: 'btn btn-small btn-primary', onclick: () => abrirParecer(limparParecer(clone(p))) }, 'Abrir'),
         el('button', { class: 'btn btn-small', onclick: () => duplicarParecer(p) }, 'Duplicar'),
         el('button', { class: 'btn btn-small btn-danger', onclick: () => excluirParecer(p) }, 'Excluir'))));
   }
   box.append(el('table', { class: 'table' },
-    el('thead', {}, el('tr', {}, el('th', { text: 'Identificação do caso' }), el('th', { text: 'Modelo de origem' }), el('th', { text: 'Atualizado' }), el('th', { text: '' }))),
+    el('thead', {}, el('tr', {}, el('th', { text: 'Identificação do caso' }), el('th', { text: 'Status' }), el('th', { text: 'Modelo de origem' }), el('th', { text: 'Atualizado' }), el('th', { text: '' }))),
     tb));
 }
 
 function duplicarParecer(origem) {
   if (state.parecer && origem.id === state.parecer.id) salvarParecer({ silencioso: true });
-  const base = clone(origem.id && state.parecer && origem.id === state.parecer.id ? state.parecer : origem);
+  const base = limparParecer(clone(origem.id && state.parecer && origem.id === state.parecer.id ? state.parecer : origem));
   const agora = agoraISO();
   const novo = { ...base, id: uid(), titulo: (base.titulo || '') + ' (cópia)', criadoEm: agora, atualizadoEm: agora };
   if (!Store.salvar(novo)) return;
   abrirParecer(novo);
-  toast('Cópia criada. Ajuste as informações para o novo caso.', 'ok');
+  toast('Cópia criada. Ajuste os dados do caso para o novo parecer.', 'ok');
 }
 
 async function excluirParecer(p) {
   const ok = await confirmar('Excluir parecer', `Excluir “${p.titulo || '(sem identificação)'}”? Esta ação não pode ser desfeita (a biblioteca de modelos não é afetada).`, 'Excluir', true);
   if (!ok) return;
   if (!Store.excluir(p.id)) return;
-  if (state.parecer && state.parecer.id === p.id) fecharParecer({ salvar: false });
+  if (state.parecer && state.parecer.id === p.id) fecharParecer({ salvar: false, irPara: null });
   renderPareceres();
   toast('Parecer excluído.', 'ok');
 }
@@ -1111,7 +1922,7 @@ function exportarBackup() {
   if (state.parecer && state.dirty) salvarParecer({ silencioso: true });
   const dados = {
     formato: 'pareceres-socioambientais-backup',
-    versao: 1,
+    versao: 2,
     exportadoEm: agoraISO(),
     bibliotecaVersao: LIB.versao,
     pareceres: Store.listar(),
@@ -1166,20 +1977,22 @@ async function importarBackup(arquivo) {
   if (!Store.gravarTodos(final)) return;
   if (state.parecer) {
     const atualizado = final.find((p) => p.id === state.parecer.id);
-    if (atualizado) abrirParecer(clone(atualizado), { manterView: true });
-    else fecharParecer({ salvar: false });
+    if (atualizado) abrirParecer(limparParecer(clone(atualizado)), { manterView: true });
+    else fecharParecer({ salvar: false, irPara: null });
   }
   renderPareceres();
   toast(`Backup importado (${r === 'mesclar' ? 'mesclado' : 'substituído'}). Total: ${final.length} parecer(es).`, 'ok');
 }
 
-/* =============================== 9. Guia ============================ */
+/* =============================== 13. Guia ============================ */
 function tabela(rows) {
   if (!Array.isArray(rows) || !rows.length) return null;
   const [cab, ...corpo] = rows;
   return el('table', { class: 'table' },
     el('thead', {}, el('tr', {}, cab.map((c) => el('th', { text: c })))),
-    el('tbody', {}, corpo.map((r) => el('tr', {}, r.map((c) => el('td', { text: c }))))));
+    el('tbody', {}, corpo.map((r) => (r.length === 1
+      ? el('tr', { class: 'tr-sec' }, el('td', { colspan: String(cab.length), text: r[0] }))
+      : el('tr', {}, r.map((c) => el('td', { text: c })))))));
 }
 
 function renderGuia() {
@@ -1194,59 +2007,53 @@ function renderGuia() {
   }
 
   g.append(el('h3', { text: 'Como usar a ferramenta' }), el('ol', {},
-    el('li', { text: 'No menu lateral do Editor, abra uma categoria e clique no nome do parecer para carregá-lo. O ícone 👁︎ mostra o texto sem abrir. A busca no topo do menu procura no título e em todo o conteúdo.' }),
-    el('li', { text: 'No Editor, substitua os campos destacados em amarelo [ENTRE COLCHETES] pelas informações do caso, apague as opções que não se aplicam e edite livremente o texto.' }),
-    el('li', { text: 'Com um parecer aberto, o painel “Trechos reutilizáveis” fica à direita: clique no texto do parecer e depois em “Inserir”. A seta » recolhe o painel e « mostra de novo.' }),
-    el('li', { text: 'O menu de pareceres padrão (à esquerda) também pode ser recolhido pela seta « no topo dele, para o texto ganhar espaço; a seta » mostra de novo.' }),
-    el('li', { text: 'Para começar sem modelo, use “+ Novo parecer” no menu lateral ou abra o Editor sem parecer aberto (Mais ▾ → Fechar parecer). Há duas opções: em branco ou com a estrutura padrão (blocos 1 a 6).' }),
-    el('li', { text: 'Copie, baixe o .txt ou imprima/salve em PDF. Revise o texto antes: campos não substituídos saem como estão.' })));
+    el('li', { text: 'No Início, escolha um modelo (os cartões mostram o status e “quando usar”; 👁︎ mostra o texto sem abrir) ou comece do zero: “Montar por blocos” traz a estrutura padrão, e “Em branco” abre uma página vazia.' }),
+    el('li', { text: 'No Editor, preencha o painel “Dados do caso” (à esquerda). O tipo de pessoa troca sozinho “O produtor”/“A empresa”, “CPF”/“CNPJ” e “com este produtor”/“com esta empresa”. Cada campo preenchido é aplicado em todo o texto.' }),
+    el('li', { text: 'Em “Opções do texto”, escolha a opção de fundamentação ou de operação que se aplica (as outras saem do parecer), as alternativas entre colchetes e os parágrafos opcionais. Parágrafos condicionais entram sozinhos conforme o campo (ex.: CAR “Suspenso”).' }),
+    el('li', { text: 'Edite o texto livremente. Clique num campo destacado para ir ao painel; duplo clique converte o campo em texto comum. Use “Apagar seleção” para remover trechos, o × à esquerda para remover um parágrafo inteiro e “Limpar” para esvaziar o texto (todos podem ser desfeitos).' }),
+    el('li', { text: 'O painel “Trechos padronizados” (à direita) insere textos na posição do cursor. O filtro por bloco pode seguir o cursor quando o parecer tem a estrutura de blocos.' }),
+    el('li', { text: 'Pré-visualize, copie ou exporte (Word, PDF ou .txt). Se faltar algo, a ferramenta lista as pendências antes. No PDF, escolha “Salvar como PDF” na janela de impressão.' })));
 
   g.append(el('div', { class: 'box' }, el('h4', { text: 'Onde ficam os dados' }),
     el('p', { text: 'Os modelos vêm do arquivo modelos.js (somente leitura na tela). Os pareceres em elaboração ficam salvos automaticamente apenas neste navegador, neste computador — não há sincronização entre analistas ou máquinas. Faça backups em “Meus pareceres”.' }),
-    el('p', { text: 'Versão da biblioteca: ' + (LIB.versao || '—') + ' · ' + LIB.modelos.length + ' modelos · ' + LIB.trechos.length + ' trechos.' })));
+    el('p', { text: 'Versão da biblioteca: ' + (LIB.versao || '—') + ' · ' + LIB.modelos.length + ' modelos · ' + LIB.trechos.length + ' trechos · ' + LISTA_CAMPOS.length + ' campos.' })));
 
   g.append(el('div', { class: 'box' }, el('h4', { text: 'Atalhos de teclado' }), el('ul', {},
-    el('li', { text: '/ — pesquisar pareceres (Enter abre o primeiro resultado; Esc limpa)' }),
-    el('li', { text: 'Alt+1 a Alt+3 — trocar de área' }),
-    el('li', { text: 'Ctrl+S — salvar parecer · Ctrl+P — imprimir parecer' }),
+    el('li', { text: '/ — pesquisar modelos no Início (Enter abre o primeiro resultado; Esc limpa)' }),
+    el('li', { text: 'Alt+1 a Alt+4 — Início, Editor, Meus pareceres, Guia' }),
+    el('li', { text: 'Ctrl+S — salvar parecer · Ctrl+P — PDF/impressão' }),
     el('li', { text: 'Ctrl+B / Ctrl+I — negrito / itálico · Ctrl+Z / Ctrl+Y — desfazer / refazer' }))));
 
   if (G.orientacoes) {
     const ol = el('ol');
-    for (const o of G.orientacoes) { const li = el('li'); appendRuns(li, parseMarkup(o)); ol.append(li); }
-    g.append(el('h3', { text: '1. Orientações de preenchimento (do documento Word)' }), ol);
+    for (const o of G.orientacoes) { const li = el('li'); appendRuns(li, parseMarkup(o, novoContexto())); ol.append(li); }
+    g.append(el('h3', { text: '1. Orientações de preenchimento' }), ol);
   }
   if (G.estrutura) g.append(el('h3', { text: '2. Estrutura padrão do parecer' }), el('p', { text: G.estruturaIntro || '' }), tabela(G.estrutura));
-  if (G.casosDisponiveis) {
-    g.append(el('h3', { text: 'Casos disponíveis (como listado no Word)' }),
-      el('ul', {}, G.casosDisponiveis.map((c) => el('li', { text: c }))),
-      el('p', { class: 'hint', text: 'Esta lista diverge da organização do corpo do documento — ver pendências abaixo.' }));
-  }
+  if (G.guiaRapido) g.append(el('h3', { text: '2.1 Guia rápido – qual modelo usar' }), tabela(G.guiaRapido));
   if (pend.length) {
-    g.append(el('h3', { text: 'Pendências do Word para validação humana' }),
-      el('p', { class: 'hint', text: 'Pontos encontrados na importação. Os textos foram mantidos exatamente como no Word; ajustes devem ser decididos pela área responsável e feitos em modelos.js.' }),
+    g.append(el('h3', { text: 'Pendências para validação humana' }),
+      el('p', { class: 'hint', text: 'Pontos encontrados na importação dos textos. Os textos foram mantidos como recebidos; ajustes devem ser decididos pela área responsável e feitos em modelos.js.' }),
       el('ul', { class: 'pend-list' }, pend.map((p) => el('li', {},
         el('div', { text: p.descricao }),
         p.modelos && p.modelos.length ? el('div', { class: 'mods' }, 'Modelos: ', ...p.modelos.flatMap((id, i) => {
           const m = LIB.porId.get(id);
-          const b = el('button', { class: 'link', text: m ? m.titulo.split('–')[0].trim() + ' (' + m._cat.split('.')[0] + ')' : id, title: m ? m.titulo : '' });
+          const b = el('button', { class: 'link', text: m ? partesTitulo(m.titulo)[0] || m.titulo.slice(0, 40) : id, title: m ? m.titulo : '' });
           b.addEventListener('click', () => visualizarModelo(id));
           return i ? [', ', b] : [b];
         })) : null))));
   }
-  if (G.anexo) {
-    g.append(el('h3', { text: 'Anexo do Word – relação de alterações (consulta)' }),
-      el('details', {}, el('summary', { text: 'Mostrar quadro comparativo' }), el('p', { class: 'hint', text: G.anexoIntro || '' }), tabela(G.anexo)));
-  }
 }
 
-/* ========== 10. Interface: abas, diálogos, avisos, atalhos ========== */
+/* ========== 14. Interface: abas, diálogos, avisos, atalhos ========== */
+const VIEWS = ['inicio', 'editor', 'pareceres', 'guia'];
+
 function setView(v) {
   state.view = v;
   $$('.view').forEach((s) => s.classList.toggle('active', s.dataset.view === v));
   $$('.tab').forEach((t) => { const on = t.dataset.view === v; t.classList.toggle('active', on); t.setAttribute('aria-selected', on); });
   if (v === 'pareceres') renderPareceres();
-  if (v === 'editor' && !state.parecer) renderEditorVazio();
+  if (v === 'inicio' || (v === 'editor' && !state.parecer)) renderRecentes();
   Store.ui('view', v);
 }
 
@@ -1268,11 +2075,12 @@ function toast(msg, tipo = '', ms = 3500, acao = null) {
 }
 
 /** Diálogo modal nativo. Resolve com o "value" do botão clicado (ou null). */
-function abrirDialogo({ titulo, corpo, acoes, narrow = false }) {
+function abrirDialogo({ titulo, corpo, acoes, narrow = false, largo = false }) {
   return new Promise((resolve) => {
     const d = $('#dialog');
     if (d.open) d.close('');
     d.classList.toggle('narrow', narrow);
+    d.classList.toggle('largo', largo);
     $('#dialog-title').textContent = titulo;
     $('#dialog-body').replaceChildren(...corpo.filter(Boolean));
     const act = $('#dialog-actions');
@@ -1301,18 +2109,50 @@ async function confirmar(titulo, msg, rotulo = 'Confirmar', perigo = false) {
   return r === 'sim';
 }
 
+/** Menus suspensos (Exportar, Mais): abre/fecha pelo botão. */
+function ligarMenu(botao, lista) {
+  botao.addEventListener('click', () => {
+    const abrir = lista.hidden;
+    $$('.menu-list').forEach((m) => { m.hidden = true; });
+    lista.hidden = !abrir;
+    botao.setAttribute('aria-expanded', String(abrir));
+  });
+}
+
+/** Botão × para remover o parágrafo sob o mouse. */
+function ligarRemoverParagrafo() {
+  const ed = $('#editor');
+  const page = $('#page');
+  const btn = $('#par-del');
+  let alvo = null;
+  ed.addEventListener('mousemove', (e) => {
+    const b = closestBloco(e.target);
+    if (!b || b === alvo) return;
+    alvo = b;
+    btn.style.top = (b.offsetTop + Math.min(b.offsetHeight / 2, 14) - 11) + 'px';
+    btn.hidden = false;
+  });
+  page.addEventListener('mouseleave', () => { btn.hidden = true; alvo = null; });
+  btn.addEventListener('mousedown', (e) => e.preventDefault());
+  btn.addEventListener('click', () => {
+    if (!alvo || !alvo.isConnected) return;
+    const snap = snapshot();
+    alvo.remove();
+    alvo = null;
+    btn.hidden = true;
+    garantirParagrafo();
+    renderDados();
+    aoEditar();
+    oferecerDesfazer(snap, 'Parágrafo removido.');
+  });
+}
+
 function ligarEventos() {
   // abas
   $$('.tab').forEach((t) => t.addEventListener('click', () => setView(t.dataset.view)));
   document.addEventListener('click', (e) => {
     const go = e.target.closest('[data-goto]');
     if (go) setView(go.dataset.goto);
-    // cartão "A partir de um modelo": leva à busca do menu lateral
-    if (e.target.closest('[data-acao="buscar"]')) {
-      recolherMenu(false);
-      if (window.matchMedia('(max-width: 900px)').matches) abrirGaveta();
-      $('#lib-search').focus();
-    }
     // fecha menus suspensos ao clicar fora deles
     $$('.menu').forEach((m) => {
       if (m.contains(e.target)) return;
@@ -1321,53 +2161,50 @@ function ligarEventos() {
       const btn = $('button[aria-haspopup]', m);
       if (btn) btn.setAttribute('aria-expanded', 'false');
     });
-    // começar parecer em branco (tela vazia do Editor e botão + Novo parecer)
     const novo = e.target.closest('[data-novo]');
-    if (novo) {
-      $('#menu-new').hidden = true;
-      fecharGaveta();
-      novoParecerEmBranco(novo.dataset.novo === 'estrutura');
-    }
-  });
-  $('#btn-new').addEventListener('click', () => {
-    const m = $('#menu-new');
-    m.hidden = !m.hidden;
-    $('#btn-new').setAttribute('aria-expanded', String(!m.hidden));
+    if (novo) novoParecer(novo.dataset.novo);
+    const exp = e.target.closest('[data-exp]');
+    if (exp) exportar(exp.dataset.exp);
   });
 
-  // menu lateral (modelos e trechos)
-  const buscar = debounce(() => renderMenu(), 120);
-  $('#lib-search').addEventListener('input', (e) => { state.busca = e.target.value; buscar(); });
-  $('#lib-search').addEventListener('keydown', (e) => {
+  // início
+  const buscar = debounce(() => renderInicio(), 120);
+  $('#home-search').addEventListener('input', (e) => { state.buscaInicio = e.target.value; buscar(); });
+  $('#home-search').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       buscar.flush();
-      const ts = termos(state.busca);
+      const ts = termos(state.buscaInicio);
       const primeiro = ts.length && LIB.modelos.find((m) => ts.every((t) => m._busca.includes(t)));
-      if (primeiro) abrirModeloDoMenu(primeiro.id);
+      if (primeiro) usarModelo(primeiro.id);
     } else if (e.key === 'Escape') {
       e.target.value = '';
-      state.busca = '';
-      renderMenu();
+      state.buscaInicio = '';
+      renderInicio();
     }
   });
-  $('#btn-side-toggle').addEventListener('click', () => recolherMenu(!$('#sidebar').classList.contains('recolhido')));
-  $('#side-label').addEventListener('click', () => { if ($('#sidebar').classList.contains('recolhido')) recolherMenu(false); });
+
+  // painéis laterais
+  $('#btn-dados-toggle').addEventListener('click', () => recolherDados(!$('#dados-panel').classList.contains('recolhido')));
+  $('#dados-label').addEventListener('click', () => { if ($('#dados-panel').classList.contains('recolhido')) recolherDados(false); });
+  $('#dados-pend').addEventListener('click', mostrarPendencias);
   $('#btn-tr-toggle').addEventListener('click', () => recolherTrechos(!$('#tr-panel').classList.contains('recolhido')));
   $('#tr-panel-label').addEventListener('click', () => recolherTrechos(false));
-  $('#btn-sidebar').addEventListener('click', () => (document.body.classList.contains('side-open') ? fecharGaveta() : abrirGaveta()));
-  $('#sidebar-backdrop').addEventListener('click', fecharGaveta);
 
   // editor
   const ed = $('#editor');
   try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch (_) { /* opcional */ }
   ed.addEventListener('input', (e) => {
     if (e.inputType === 'insertParagraph') {
-      // parágrafo novo e vazio não herda "grupo de opções" nem "rótulo"
+      // parágrafo novo e vazio não herda opção, condição, rótulo…
       const sel = getSelection();
       const bloco = sel.rangeCount ? closestBloco(sel.anchorNode) : null;
-      if (bloco && !bloco.textContent.trim()) { bloco.removeAttribute('data-grupo'); bloco.classList.remove('rotulo', 'flash'); bloco.removeAttribute('title'); }
+      if (bloco && !bloco.textContent.trim()) {
+        for (const a of ['grupo', 'opcao', 'se', 'opcional', 'incluido', 'etiqueta', 'bloco']) delete bloco.dataset[a];
+        bloco.classList.remove('rotulo', 'flash', 'oculto', 'opt-pend');
+        bloco.removeAttribute('title');
+      }
     }
-    if (!ed.firstElementChild) { ed.replaceChildren(parParaElemento({ tipo: 'p', runs: [] })); }
+    garantirParagrafo();
     aoEditar();
   });
   ed.addEventListener('paste', aoColar);
@@ -1379,36 +2216,48 @@ function ligarEventos() {
     if (pos) { const s = getSelection(); s.removeAllRanges(); s.addRange(pos); }
     document.execCommand('insertText', false, txt);
   });
+  ed.addEventListener('click', (e) => {
+    const chip = e.target.closest('.campo');
+    if (chip && e.detail === 1) focarNoPainel(chip);
+  });
+  ed.addEventListener('dblclick', (e) => {
+    const chip = e.target.closest('.campo');
+    if (chip) { e.preventDefault(); converterChip(chip); }
+  });
   document.addEventListener('selectionchange', () => {
     const s = getSelection();
-    if (s.rangeCount && ed.contains(s.anchorNode)) state.lastRange = s.getRangeAt(0).cloneRange();
+    if (s.rangeCount && ed.contains(s.anchorNode)) { state.lastRange = s.getRangeAt(0).cloneRange(); seguirBloco(); }
   });
+  ligarRemoverParagrafo();
   $$('[data-cmd]').forEach((b) => {
     b.addEventListener('mousedown', (e) => e.preventDefault());
     b.addEventListener('click', () => { ed.focus(); document.execCommand(b.dataset.cmd); aoEditar(); });
   });
+  $('#btn-del-sel').addEventListener('mousedown', (e) => e.preventDefault());
+  $('#btn-del-sel').addEventListener('click', apagarSelecao);
+  $('#btn-clear').addEventListener('click', limparConteudo);
   $('#doc-title').addEventListener('input', () => { if (state.parecer) { state.parecer.titulo = $('#doc-title').value; marcarAlterado(); } });
-  $('#btn-save').addEventListener('click', () => salvarParecer());
-  $('#btn-copy').addEventListener('click', copiarParecer);
-  $('#btn-txt').addEventListener('click', baixarTxt);
-  $('#btn-print').addEventListener('click', imprimir);
-  $('#btn-more').addEventListener('click', () => {
-    const m = $('#menu-more');
-    m.hidden = !m.hidden;
-    $('#btn-more').setAttribute('aria-expanded', String(!m.hidden));
-  });
+  $('#btn-copy').addEventListener('click', () => exportar('copiar'));
+  $('#btn-preview').addEventListener('click', preVisualizar);
+  ligarMenu($('#btn-export'), $('#menu-export'));
+  ligarMenu($('#btn-more'), $('#menu-more'));
+  $('#btn-save').addEventListener('click', () => { $('#menu-more').hidden = true; salvarParecer(); });
   $('#btn-duplicate').addEventListener('click', () => { $('#menu-more').hidden = true; duplicarParecer(state.parecer); });
   $('#btn-close').addEventListener('click', () => { $('#menu-more').hidden = true; fecharParecer(); toast('Parecer salvo e fechado.', 'ok'); });
   $('#btn-restore').addEventListener('click', async () => {
     $('#menu-more').hidden = true;
     const m = LIB.porId.get(state.parecer.modeloId);
     if (!m) return toast('O modelo de origem não está na biblioteca atual.', 'err');
-    const ok = await confirmar('Restaurar texto do modelo', 'O texto atual deste parecer será trocado pelo texto-base do modelo. Continuar?', 'Restaurar');
+    const ok = await confirmar('Restaurar texto do modelo', 'O texto atual deste parecer será trocado pelo texto-base do modelo. Os dados do caso preenchidos são mantidos. Continuar?', 'Restaurar');
     if (!ok) return;
     const snap = snapshot();
-    state.parecer.paragrafos = modeloParaParagrafos(m);
+    const P = state.parecer;
+    P.escolhas = {};
+    P.grupos = {};
+    P.paragrafos = modeloParaParagrafos(m, P);
     renderEditor();
-    marcarAlterado();
+    renderDados();
+    aoEditar();
     oferecerDesfazer(snap, 'Texto do modelo restaurado.');
   });
   $('#btn-code').addEventListener('click', () => { $('#menu-more').hidden = true; gerarCodigoModelo(); });
@@ -1428,20 +2277,17 @@ function ligarEventos() {
     const emCampo = e.target.closest && e.target.closest('input, textarea, select, [contenteditable="true"]');
     if (e.key === '/' && !emCampo && !$('#dialog').open) {
       e.preventDefault();
-      setView('editor');
-      recolherMenu(false);
-      if (window.matchMedia('(max-width: 900px)').matches) abrirGaveta();
-      $('#lib-search').focus();
+      setView('inicio');
+      $('#home-search').focus();
       return;
     }
-    if (e.key === 'Escape' && document.body.classList.contains('side-open')) { fecharGaveta(); return; }
-    if (e.altKey && !e.ctrlKey && ['1', '2', '3'].includes(e.key)) {
+    if (e.altKey && !e.ctrlKey && ['1', '2', '3', '4'].includes(e.key)) {
       e.preventDefault();
-      setView(['editor', 'pareceres', 'guia'][Number(e.key) - 1]);
+      setView(VIEWS[Number(e.key) - 1]);
       return;
     }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && state.parecer) { e.preventDefault(); salvarParecer(); return; }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p' && state.parecer && state.view === 'editor') { e.preventDefault(); imprimir(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p' && state.parecer && state.view === 'editor') { e.preventDefault(); exportar('pdf'); }
   });
 
   // não perder trabalho ao fechar
@@ -1453,19 +2299,19 @@ function init() {
   Store.testar();
   carregarBiblioteca();
   ligarEventos();
-  renderMenu();
+  renderInicio();
   renderTrechosPainel();
   recolherTrechos(Store.ui('trechosRecolhido') === true);
-  recolherMenu(Store.ui('menuRecolhido') === true);
+  recolherDados(Store.ui('dadosRecolhido') === true);
   renderGuia();
   if (!Store.disponivel) {
-    toast('O armazenamento do navegador está bloqueado: os pareceres não serão salvos. Use copiar/.txt para guardar o trabalho.', 'err', 12000);
+    toast('O armazenamento do navegador está bloqueado: os pareceres não serão salvos. Exporte o parecer para guardar o trabalho.', 'err', 12000);
   }
   const ultimo = Store.ui('ultimo');
   const p = ultimo ? Store.obter(ultimo) : null;
-  if (p) abrirParecer(p, { manterView: true });
+  if (p) abrirParecer(limparParecer(p), { manterView: true });
   const v = Store.ui('view');
-  setView(['pareceres', 'guia'].includes(v) ? v : 'editor');
+  setView(VIEWS.includes(v) && (v !== 'editor' || p) ? v : 'inicio');
   if (LIB.problemas.length) toast(`Atenção: ${LIB.problemas.length} problema(s) em modelos.js (ver Guia).`, 'warn', 8000);
 }
 

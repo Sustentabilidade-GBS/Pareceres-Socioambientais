@@ -1,6 +1,6 @@
-# Pareceres Socioambientais — ferramenta de montagem
+# Pareceres Socioambientais — ferramenta de emissão
 
-Ferramenta web local (HTML, CSS e JavaScript puro, sem instalação, sem servidor e sem internet) para localizar o modelo de parecer, preencher os campos, adaptar o texto e gerar o parecer final.
+Ferramenta web local (HTML, CSS e JavaScript puro, sem instalação, sem servidor e sem internet) para escolher o modelo de parecer, preencher só os dados do caso, adaptar o texto e emitir o parecer em Word, PDF ou texto.
 
 ## Como executar
 1. Mantenha os arquivos juntos na mesma pasta.
@@ -9,47 +9,75 @@ Ferramenta web local (HTML, CSS e JavaScript puro, sem instalação, sem servido
 ## Arquivos
 | Arquivo | Conteúdo |
 |---|---|
-| `index.html` | Estrutura da tela |
-| `styles.css` | Aparência, versão para celular e versão de impressão |
-| `modelos.js` | **Biblioteca**: categorias, modelos, trechos, pendências e guia, extraídos de `TEXTOS_PADRAO_REVISADO.docx` |
+| `index.html` | Estrutura das telas |
+| `styles.css` | Aparência, versão para celular e versão de impressão/PDF |
+| `modelos.js` | **Biblioteca**: textos, categorias, status, campos parametrizados, modelos, trechos, pendências e guia |
 | `script.js` | Funcionamento da ferramenta |
-| `assets/` | Logo ADM e faixa de cores da marca (extraídos do PowerPoint de referência) |
+| `docx.js` | Gerador de arquivos Word (.docx) sem bibliotecas externas |
+| `assets/` | Logo ADM e faixa de cores da marca; `logo-data.js` é o logo em base64, usado no Word |
 
-Identidade visual: azul ADM `#012169` (cor principal: botões, títulos, abas) e verde `#8BC400` (destaques, confirmações, indicador da aba ativa), com os neutros do PowerPoint (`#5B6470`, `#F2F5F9`, `#C7CFD9`) e a fonte Calibri. As cores ficam em variáveis no topo de `styles.css`.
-
-## Biblioteca de modelos (`modelos.js`)
-- Os textos foram extraídos automaticamente do Word e conferidos: **166 parágrafos idênticos ao original e 0 diferenças**. Nenhum texto foi corrigido. Os pontos duvidosos estão em `PENDENCIAS_WORD` e aparecem no **Guia** da ferramenta.
-- Os analistas **não alteram** os modelos pela tela. Para incluir, editar ou recategorizar um modelo, edite `modelos.js` (as instruções estão no topo do arquivo) e redistribua a pasta.
-- Para aproveitar um parecer já adaptado como modelo: no Editor, use **Mais ▾ → Gerar código do modelo**, copie o bloco e cole em `MODELOS`.
-- Trechos reutilizáveis (`TRECHOS`): cada um tem `texto` (um parágrafo) ou `paragrafos` (vários, no mesmo formato dos modelos). O trecho **Modelo-base completo** insere os blocos 1 a 6 de uma vez; os títulos dos blocos entram como rótulos internos e não saem no parecer.
-- Marcações nos textos: `[CAMPO]` campo a preencher; `[a / b]` alternativa; `**negrito**`; `==condicional==` (amarelo sem colchetes no Word); `!!validação!!` (azul no Word).
-
-## Onde ficam os pareceres
-- Os pareceres em elaboração são salvos automaticamente no **navegador (localStorage)**, só neste computador e neste navegador. Não há sincronização entre analistas ou máquinas.
-- Limpar os dados do navegador apaga esses pareceres. Use **Meus pareceres → Exportar backup** com frequência. **Importar backup** permite mesclar ou substituir.
-- Os modelos da biblioteca nunca são alterados ao salvar um parecer.
+Identidade visual: azul ADM `#012169` e verde `#8BC400`, com os neutros do PowerPoint (`#5B6470`, `#F2F5F9`, `#C7CFD9`) e a fonte Calibri. As cores ficam em variáveis no topo de `styles.css`.
 
 ## Fluxo de uso
-1. **Escolher o parecer**: a aba **Editor** tem, à esquerda, um menu com as categorias (A. Parecer favorável, B. Desbloqueio excepcional, C. Bloqueio mantido, Modelo-base). Cada categoria abre como um menu suspenso com os pareceres dentro.
-   - Clique no nome para carregar o parecer no editor. Se havia outro aberto, ele fica salvo em Meus pareceres.
-   - O ícone 👁︎ mostra o texto sem abrir.
-   - A busca no topo do menu procura no título e no conteúdo. **Enter** abre o primeiro resultado e **Esc** limpa a busca.
-2. **Editar**: substitua os campos em amarelo `[ENTRE COLCHETES]`, apague as opções que não se aplicam (parágrafos com barra azul à esquerda) e ajuste o texto livremente.
-   - Com um parecer aberto, o painel **Trechos reutilizáveis** fica à direita: clique no texto do parecer e depois em **Inserir**. A seta **»** recolhe o painel e **«** mostra de novo (a escolha fica guardada).
-   - O menu de pareceres padrão (esquerda) recolhe pela seta **«** no topo dele e volta pela seta **»** — a escolha fica guardada.
-   - No celular, o menu de modelos abre pelo botão **☰ Modelos de parecer** e os trechos ficam abaixo do texto.
-3. **Copiar**, **Baixar .txt** ou **Imprimir / PDF**. Revise antes: campos não substituídos saem como estão. Os destaques coloridos não aparecem no texto final, e os rótulos internos do modelo-base não são incluídos.
+1. **Início**: os modelos aparecem em cartões, por categoria (A. Aprovado, B. Desbloqueio excepcional, C. Bloqueio mantido, D. Procedimentos operacionais e cadastrais, Modelo-base). Cada cartão mostra o status, o "quando usar" e o botão 👁︎ para ver o texto sem abrir. A busca procura no título e no conteúdo (Enter abre o primeiro resultado).
+   - **Montar por blocos**: estrutura padrão (blocos 1 a 7) com os trechos de cada bloco no painel à direita.
+   - **Em branco**: página vazia.
+   - **Continuar um parecer**: os mais recentes.
+2. **Editor**, em três colunas:
+   - **Dados do caso** (esquerda):
+     - status e cabeçalho;
+     - tipo de pessoa (PF → "O produtor"/CPF/"com este produtor"; PJ → "A empresa"/CNPJ/"com esta empresa");
+     - os campos usados no parecer (nome, CAR, município, contrato…), preenchidos uma vez e aplicados ao texto todo;
+     - **Opções do texto**: opção de fundamentação ou de operação (as não escolhidas saem do parecer), alternativas entre colchetes e parágrafos opcionais. Parágrafos condicionais entram sozinhos (ex.: CAR "Suspenso").
+     - O contador de pendências mostra o que falta.
+   - **Documento** (centro):
+     - edição livre;
+     - os campos aparecem destacados e atualizam ao vivo. Clique num campo para ir ao painel; duplo clique converte em texto comum;
+     - **Apagar seleção** remove o trecho selecionado (ou os parágrafos inteiros, se a seleção atravessar parágrafos); o **×** à esquerda remove um parágrafo; **Limpar** esvazia só o texto ou texto e dados. Tudo pode ser desfeito.
+   - **Trechos padronizados** (direita): filtrados por bloco, podendo seguir o cursor, incluindo os "Trechos fundamentados" novos. Clique no texto e depois em **Inserir**.
+3. **Emitir**:
+   - **Copiar parecer** (texto e formatação para colar no chamado ou no e-mail);
+   - **Pré-visualizar**;
+   - **Exportar ▾**: Word (.docx com logo, cabeçalho e rodapé), PDF (abre a impressão: escolha "Salvar como PDF") ou .txt.
+   - Antes de copiar ou exportar, a ferramenta lista as pendências.
 
-**Começar sem modelo:** use **+ Novo parecer** no topo do menu lateral, ou entre no Editor sem parecer aberto (para fechar o atual: **Mais ▾ → Fechar parecer**). Há duas opções:
-- **Em branco**: página vazia.
-- **Com estrutura padrão**: os blocos 1 a 6 da seção 2 do Word (Identificação, Situação da área, Fundamentação, Capacidade produtiva, Conclusão e Orientação) aparecem como guia e não saem no parecer.
+## Biblioteca (`modelos.js`)
+- Fontes: `PARECERES_SOCIOAMBIENTAIS_TEXTOS_PADRAO.docx` e os "Trechos fundamentados para utilizar" enviados pela área. Os textos foram copiados **sem correção**. Os 108 parágrafos dos Casos 1 a 14 e do modelo-base foram conferidos contra o Word e são idênticos. Os pontos duvidosos estão em `PENDENCIAS_WORD` e aparecem no **Guia**.
+- Os textos ficam em `TX`, um parágrafo por chave. `MODELOS` e `TRECHOS` apontam para eles, então corrigir em `TX` corrige em todos os lugares.
+- `CAMPOS` define os campos parametrizados (rótulo, tipo, texto entre colchetes, opções, valor padrão). `DERIVADOS` gera "O produtor/A empresa", "CPF/CNPJ" etc. a partir do tipo de pessoa.
+- `STATUS` define a linha STATUS do cabeçalho e a cor dos cartões. A linha "Condição" sai nos casos excepcionais.
+- Marcações nos textos:
 
-A tela vazia do Editor também lista os 5 pareceres salvos mais recentes, para continuar de onde parou.
+  | Marcação | Efeito |
+  |---|---|
+  | `{{campo}}` | campo parametrizado |
+  | `{{campo\|TEXTO}}` | mesmo campo, com outro texto enquanto estiver vazio |
+  | `{{escolha:a\|b}}` | alternativa local (pode conter campos) |
+  | `[TEXTO]` | trecho a redigir |
+  | `**negrito**` | negrito |
+  | `==condicional==` | trecho condicional |
+  | `!!validação!!` | trecho que exige validação |
 
-O arquivo `.txt` é texto simples, e a impressão usa o recurso do navegador (pode salvar em PDF). Nenhum dos dois é um `.docx`.
+- Tipos de parágrafo:
+
+  | Forma | Uso |
+  |---|---|
+  | texto simples | parágrafo normal |
+  | `{ rotulo, bloco }` | rótulo interno, não sai no parecer |
+  | `{ grupo, instrucao, opcoes: [{ rotulo, texto }] }` | opções; o analista escolhe uma |
+  | `{ se: 'campo=valor', rotulo, texto }` | parágrafo condicional |
+  | `{ opcional, texto, incluido }` | parágrafo opcional |
+
+- As instruções completas estão no topo de `modelos.js`. Erros de digitação nos campos, como um campo inexistente, aparecem no Guia.
+- Os analistas **não alteram** os modelos pela tela. Para aproveitar um parecer adaptado como modelo: **Mais ▾ → Gerar código do modelo**, copie o bloco e cole em `MODELOS`. Os campos saem como `{{campo}}`.
+
+## Onde ficam os pareceres
+- Os pareceres em elaboração (texto, dados do caso e escolhas) são salvos automaticamente no **navegador (localStorage)**, só neste computador e neste navegador. Não há sincronização entre analistas ou máquinas.
+- Limpar os dados do navegador apaga esses pareceres. Use **Meus pareceres → Exportar backup** com frequência. **Importar backup** permite mesclar ou substituir.
+- Pareceres e backups da versão anterior continuam abrindo: o texto é mantido como estava, sem cabeçalho e sem campos parametrizados.
 
 ## Atalhos
-`/` pesquisar · `Alt+1..3` áreas · `Ctrl+S` salvar · `Ctrl+P` imprimir · `Ctrl+B/I` negrito/itálico · `Ctrl+Z/Y` desfazer/refazer.
+`/` pesquisar modelos · `Alt+1..4` áreas · `Ctrl+S` salvar · `Ctrl+P` PDF · `Ctrl+B/I` negrito/itálico · `Ctrl+Z/Y` desfazer/refazer.
 
 ## Futuro backend
 O acesso aos dados está isolado no objeto `Store` (`script.js`). Para usar um servidor, basta trocar a implementação desses métodos.
