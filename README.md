@@ -32,10 +32,10 @@ Identidade visual: azul ADM `#012169` e verde `#8BC400`, com os neutros do Power
 2. **Editor**, em três colunas:
    - **Faixa de progresso** (acima do texto, fica visível ao rolar): "Faltam N itens" e **Ir para o próximo** (Ctrl+Enter), que leva a cada pendência na ordem do parecer — o campo no painel, a escolha de opção ou o [texto a redigir], que já fica selecionado para digitar por cima. "ver lista" mostra todas, clicáveis. Fica verde quando não falta nada.
    - **Dados do caso** (esquerda):
-     - status e cabeçalho;
+     - status;
      - **Escolhas do texto** (primeiro, porque decidem os campos): opção de fundamentação ou de operação (as não escolhidas saem do parecer e os campos delas somem do painel), alternativas entre colchetes e parágrafos opcionais. Parágrafos condicionais entram sozinhos (ex.: CAR "Suspenso");
      - tipo de pessoa (PF → "O produtor"/CPF/"com este produtor"; PJ → "A empresa"/CNPJ/"com esta empresa");
-     - os campos usados no texto que sai e no cabeçalho, preenchidos uma vez e aplicados ao texto todo.
+     - os campos usados no texto que sai, preenchidos uma vez e aplicados ao texto todo.
    - **Documento** (centro):
      - edição livre;
      - os campos aparecem destacados e atualizam ao vivo. Clique num campo para ir ao painel; duplo clique converte em texto comum. Clique num [texto a redigir] para selecioná-lo inteiro;
@@ -47,14 +47,14 @@ Identidade visual: azul ADM `#012169` e verde `#8BC400`, com os neutros do Power
 3. **Emitir**:
    - **Copiar parecer** (texto e formatação para colar no chamado ou no e-mail);
    - **Pré-visualizar**;
-   - **Exportar ▾**: Word (.docx com logo, cabeçalho e rodapé), PDF (abre a impressão: escolha "Salvar como PDF") ou .txt.
+   - **Exportar ▾**: Word (.docx com logo e rodapé), PDF (abre a impressão: escolha "Salvar como PDF") ou .txt.
    - Antes de copiar ou exportar, a ferramenta lista as pendências.
 
 ## Biblioteca (`modelos.js`)
 - Fontes: `PARECERES_SOCIOAMBIENTAIS_TEXTOS_PADRAO.docx` e os "Trechos fundamentados para utilizar" enviados pela área (os modelos e trechos do histórico estão na seção seguinte). Os textos foram copiados **sem correção**. Os 108 parágrafos dos Casos 1 a 14 e do modelo-base foram conferidos contra o Word e são idênticos. Os pontos duvidosos estão em `PENDENCIAS_WORD` e aparecem no **Guia**.
 - Os textos ficam em `TX`, um parágrafo por chave. `MODELOS` e `TRECHOS` apontam para eles, então corrigir em `TX` corrige em todos os lugares.
 - `CAMPOS` define os campos parametrizados (rótulo, tipo, texto entre colchetes, opções, valor padrão). `DERIVADOS` gera "O produtor/A empresa", "CPF/CNPJ" etc. a partir do tipo de pessoa.
-- `STATUS` define a linha STATUS do cabeçalho e a cor dos cartões. A linha "Condição" sai nos casos excepcionais.
+- `STATUS` define o nome do status e a cor dos cartões.
 - `TEMAS` define os temas do chamado: `modelos` (ids que aparecem no tema; um modelo pode estar em vários) e `protocolos` (temas do histórico cujos trechos pertencem a ele). Modelo novo sem tema aparece só em "Todos" e na busca.
 - Marcações nos textos:
 
@@ -92,7 +92,7 @@ Identidade visual: azul ADM `#012169` e verde `#8BC400`, com os neutros do Power
 ## Onde ficam os pareceres
 - Os pareceres em elaboração (texto, dados do caso e escolhas) são salvos automaticamente no **navegador (localStorage)**, só neste computador e neste navegador. Não há sincronização entre analistas ou máquinas.
 - Limpar os dados do navegador apaga esses pareceres. Use **Meus pareceres → Exportar backup** com frequência. **Importar backup** permite mesclar ou substituir.
-- Pareceres e backups da versão anterior continuam abrindo: o texto é mantido como estava, sem cabeçalho e sem campos parametrizados.
+- Pareceres e backups da versão anterior continuam abrindo: o texto é mantido como estava, sem campos parametrizados.
 
 ## Atalhos
 `/` pesquisar modelos · `Ctrl+Enter` próximo item pendente · `Alt+1..4` áreas · `Ctrl+S` salvar · `Ctrl+P` PDF · `Ctrl+B/I` negrito/itálico · `Ctrl+Z/Y` desfazer/refazer.

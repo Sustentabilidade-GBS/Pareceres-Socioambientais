@@ -11,7 +11,7 @@
    - Para ADICIONAR um modelo: copie um bloco { id: ..., } de MODELOS,
      troque o "id" (único; não deve mudar depois) e edite.
    - "categoria": um id de CATEGORIAS. "status": um id de STATUS (define
-     a cor do cartão e a linha STATUS do cabeçalho do parecer).
+     a cor do cartão e o status inicial do parecer).
    - "padroes" (opcional): valores iniciais dos campos, ex.: { tipoPessoa: 'PJ' }.
    - Cada item de "paragrafos" pode ser:
        "texto"                                parágrafo normal
@@ -45,17 +45,16 @@ const BIBLIOTECA_VERSAO = '2026-10-26';
 const CATEGORIAS = [
   { id: 'aprovado',     nome: 'A. Aprovado – desbloqueio' },
   { id: 'excepcional',  nome: 'B. Desbloqueio excepcional – somente operação já formalizada',
-    descricao: 'A restrição continua existindo: o desbloqueio vale apenas para concluir a operação já formalizada, e o bloqueio deve ser restabelecido ao final. Por isso, o cabeçalho traz a linha “Condição”.' },
+    descricao: 'A restrição continua existindo: o desbloqueio vale apenas para concluir a operação já formalizada, e o bloqueio deve ser restabelecido ao final.' },
   { id: 'mantido',      nome: 'C. Bloqueio mantido' },
   { id: 'procedimento', nome: 'D. Procedimentos operacionais e cadastrais' },
   { id: 'base',         nome: 'Modelo-base (casos não previstos)' },
 ];
 
-/* Status do parecer: texto da linha STATUS do cabeçalho e cor do selo. */
+/* Status do parecer: nome e cor do selo. */
 const STATUS = [
   { id: 'aprovado',        nome: 'APROVADO',                   cor: 'ok' },
-  { id: 'excepcional',     nome: 'APROVADO (EXCEPCIONAL)',     cor: 'warn',
-    condicao: 'desbloqueio válido somente para concluir a operação já formalizada; o bloqueio será restabelecido ao final.' },
+  { id: 'excepcional',     nome: 'APROVADO (EXCEPCIONAL)',     cor: 'warn' },
   { id: 'mantido',         nome: 'BLOQUEIO MANTIDO',           cor: 'danger' },
   { id: 'desbloqueio',     nome: 'DESBLOQUEIO REALIZADO',      cor: 'info' },
   { id: 'reclassificacao', nome: 'RECLASSIFICAÇÃO CADASTRAL',  cor: 'info' },
@@ -107,7 +106,7 @@ const CAMPOS = [
   { id: 'tipoPessoa', grupo: 'Cliente', rotulo: 'Tipo de pessoa', tipo: 'selecao', ph: 'PF / PJ',
     opcoes: [{ valor: 'PF', texto: 'Pessoa física' }, { valor: 'PJ', texto: 'Pessoa jurídica' }] },
   { id: 'nome', grupo: 'Cliente', rotulo: 'Nome / razão social', ph: 'NOME / RAZÃO SOCIAL' },
-  { id: 'docNumero', grupo: 'Cliente', rotulo: 'Nº do CPF/CNPJ', ph: 'Nº DO CPF/CNPJ', dica: 'Usado no cabeçalho.' },
+  { id: 'docNumero', grupo: 'Cliente', rotulo: 'Nº do CPF/CNPJ', ph: 'Nº DO CPF/CNPJ' },
 
   { id: 'municipio', grupo: 'Área', rotulo: 'Município/UF', ph: 'MUNICÍPIO/UF' },
   { id: 'municipioPA', grupo: 'Área', rotulo: 'Município (Pará)', ph: 'MUNICÍPIO', dica: 'O texto completa com “/PA”.' },
@@ -465,7 +464,7 @@ const MODELOS = [
   {
     id: 'base', categoria: 'base', status: '',
     titulo: '4. MODELO-BASE PARA CASOS NÃO PREVISTOS',
-    quandoUsar: 'marque o status no cabeçalho e preencha cada bloco na ordem da estrutura padrão (seção 2). Fundamentação e orientação devem ser redigidas conforme o caso concreto.',
+    quandoUsar: 'marque o status no painel “Dados do caso” e preencha cada bloco na ordem da estrutura padrão (seção 2). Fundamentação e orientação devem ser redigidas conforme o caso concreto.',
     fonte: 'Word',
     paragrafos: [
       { rotulo: '1 e 2 – Identificação e situação da área', bloco: 1 }, TX.idBase,
@@ -589,7 +588,6 @@ const TRECHOS = [
 /* Pendências para validação humana. Os textos NÃO foram corrigidos. */
 const PENDENCIAS_WORD = [
   { id: 'p01', modelos: [], descricao: 'O novo Word começa na seção 2: a seção 1 (orientações de preenchimento) não está no arquivo. O Guia mantém as orientações da versão anterior.' },
-  { id: 'p02', modelos: [], descricao: 'O bloco 0 “Cabeçalho” consta da estrutura padrão, mas o Word não traz o texto dele. A ferramenta gera o cabeçalho a partir dos dados do caso (status, cliente, área e, nos casos B, a linha “Condição”). Confirmar o formato.' },
   { id: 'p03', modelos: ['c-14'], descricao: 'O Caso 14 não tem parágrafo de identificação e situação da área: começa em “Conforme diretriz…” e fala em “as áreas objeto da presente análise” (plural). Se necessário, insira a identificação pelo painel de trechos (bloco 1 e 2).' },
   { id: 'p04', modelos: ['a-08', 'c-12', 'c-13'], descricao: 'Os textos usam “Licenciamento Ambiental Rural (LAR)” com concordância masculina (“LAR válido/vencido”). A revisão anterior sugeria “Licença de Atividade Rural (LAR)”. Confirmar a nomenclatura com a SEMAS-PA.' },
   { id: 'p05', modelos: ['c-11'], descricao: '“Quando usar” do Caso 11: “o mínimo de 10% da área destinado ao cultivo” (concordância).' },
@@ -616,7 +614,6 @@ const GUIA = {
   estruturaIntro: 'Todos os modelos seguem a mesma sequência. Use-a também ao redigir casos não previstos (seção 4).',
   estrutura: [
     ['#', 'Bloco', 'Conteúdo', 'Uso'],
-    ['0', 'Cabeçalho', 'Status da análise, cliente/CPF/CNPJ e CAR/município, para que quem recebe saiba de imediato o que foi decidido.', 'Obrigatório'],
     ['1', 'Identificação', 'Produtor/empresa e se há ou não restrição vinculada ao CPF/CNPJ.', 'Obrigatório'],
     ['2', 'Situação da área', 'Município/UF, nº do CAR e motivo do bloqueio.', 'Obrigatório'],
     ['3', 'Fundamentação', 'Análise realizada (imagens de satélite, documentos, bases) e a norma, protocolo ou política aplicável.', 'Obrigatório'],

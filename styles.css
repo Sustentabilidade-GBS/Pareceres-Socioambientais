@@ -323,12 +323,6 @@ mark.hit { background: #ffe58a; color: inherit; padding: 0 1px; border-radius: 2
   background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
   box-shadow: var(--shadow);
 }
-.doc-cabecalho { padding: 28px 56px 0; }
-.doc-cabecalho table { width: 100%; border-collapse: collapse; font: 13.5px/1.45 var(--font-doc); }
-.doc-cabecalho th, .doc-cabecalho td { border: 1px solid var(--border-strong); padding: 4px 8px; text-align: left; vertical-align: top; }
-.doc-cabecalho th { width: 92px; background: var(--primary-soft); color: var(--primary); font-weight: 700; }
-.doc-cabecalho td { background: var(--surface-2); }
-.doc-cabecalho td.vazio { background: #fffbe0; }
 .editor {
   min-height: 60vh;
   padding: 32px 56px 40px;
@@ -433,9 +427,6 @@ mark.hit { background: #ffe58a; color: inherit; padding: 0 1px; border-radius: 2
 .doc-final .df-top { display: flex; align-items: center; justify-content: space-between; border-bottom: 2px solid var(--accent); padding-bottom: 6px; margin-bottom: 18px; color: var(--text-2); font-size: 9pt; }
 .doc-final .df-top img { height: 40px; }
 .doc-final h1 { text-align: center; font-size: 14pt; color: var(--primary); margin: 0 0 16px; letter-spacing: .02em; }
-.doc-final .df-cab { width: 100%; border-collapse: collapse; margin: 0 0 16px; font-size: 10.5pt; text-align: left; }
-.doc-final .df-cab th, .doc-final .df-cab td { border: 1px solid var(--border-strong); padding: 3px 8px; vertical-align: top; }
-.doc-final .df-cab th { width: 90px; background: var(--primary-soft); color: var(--primary); }
 .doc-final p { margin: 0 0 10pt; orphans: 3; widows: 3; }
 .doc-final .df-rodape { margin-top: 24px; padding-top: 6px; border-top: 1px solid var(--border); font-size: 8.5pt; color: var(--text-2); text-align: left; }
 
@@ -450,7 +441,6 @@ mark.hit { background: #ffe58a; color: inherit; padding: 0 1px; border-radius: 2
 @media (max-width: 1280px) {
   .editor-wrap { --col-dados: 270px; --col-tr: 280px; }
   .editor { padding: 28px 36px 36px; }
-  .doc-cabecalho { padding: 24px 36px 0; }
 }
 @media (max-width: 900px) {
   .topbar { gap: 8px; height: auto; flex-wrap: wrap; padding: 6px 12px 12px; }
@@ -472,7 +462,6 @@ mark.hit { background: #ffe58a; color: inherit; padding: 0 1px; border-radius: 2
   .side-panel.recolhido .tr-label { writing-mode: horizontal-tb; border-top: 0; border-left: 3px solid var(--accent); padding: 0 0 0 8px; flex: 1; }
   .dados-body { max-height: 60vh; }
   .editor { padding: 20px 16px; font-size: 15px; text-align: left; }
-  .doc-cabecalho { padding: 16px 16px 0; }
   .par-del { left: 2px; }
   .page-wide { padding: 16px; }
   .table thead { display: none; }
@@ -491,5 +480,4 @@ mark.hit { background: #ffe58a; color: inherit; padding: 0 1px; border-radius: 2
   #app, .toasts, .dialog { display: none !important; }
   #print-area { display: block; }
   #print-area .doc-final { box-shadow: none; padding: 0; max-width: none; }
-  #print-area .doc-final .df-cab th { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }

@@ -4,7 +4,6 @@
    Uso: Docx.gerar(doc) -> Uint8Array com o arquivo .docx
      doc = {
        titulo: 'PARECER SOCIOAMBIENTAL',
-       cabecalho: [['Status', 'APROVADO'], ['Cliente', '…'], …],   // pode ser []
        paragrafos: [{ runs: [{ t: 'texto', b: true, i: false }, …] }, …],
        logo: { base64, largura, altura } | null,                   // PNG
        rodape: 'texto do rodapé',
@@ -120,27 +119,10 @@ const Docx = (() => {
     return '<w:p>' + pPr + runs.map((r) => run(r)).join('') + '</w:p>';
   }
 
-  function tabelaCabecalho(linhas) {
-    const borda = '<w:top w:val="single" w:sz="4" w:color="C7CFD9"/><w:left w:val="single" w:sz="4" w:color="C7CFD9"/>' +
-      '<w:bottom w:val="single" w:sz="4" w:color="C7CFD9"/><w:right w:val="single" w:sz="4" w:color="C7CFD9"/>' +
-      '<w:insideH w:val="single" w:sz="4" w:color="C7CFD9"/><w:insideV w:val="single" w:sz="4" w:color="C7CFD9"/>';
-    const celula = (conteudo, largura, fundo) =>
-      '<w:tc><w:tcPr><w:tcW w:w="' + largura + '" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="' + fundo + '"/></w:tcPr>' +
-      '<w:p><w:pPr><w:spacing w:before="40" w:after="40"/></w:pPr>' + conteudo + '</w:p></w:tc>';
-    const linhasXml = linhas.map(([rot, val]) => '<w:tr>' +
-      celula(run({ t: rot, b: true }, '<w:color w:val="' + AZUL + '"/>'), 1900, 'E7EEF6') +
-      celula(run({ t: val, b: rot === 'Status' }), 7738, 'F7F9FC') + '</w:tr>').join('');
-    return '<w:tbl><w:tblPr><w:tblW w:w="9638" w:type="dxa"/><w:tblBorders>' + borda + '</w:tblBorders>' +
-      '<w:tblCellMar><w:left w:w="100" w:type="dxa"/><w:right w:w="100" w:type="dxa"/></w:tblCellMar></w:tblPr>' +
-      '<w:tblGrid><w:gridCol w:w="1900"/><w:gridCol w:w="7738"/></w:tblGrid>' + linhasXml + '</w:tbl>' +
-      '<w:p><w:pPr><w:spacing w:after="120"/></w:pPr></w:p>';
-  }
-
   function documentXml(doc) {
     const corpo = [];
     corpo.push('<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:after="240"/></w:pPr>' +
       run({ t: doc.titulo || 'PARECER SOCIOAMBIENTAL', b: true }, '<w:color w:val="' + AZUL + '"/><w:sz w:val="28"/>') + '</w:p>');
-    if (doc.cabecalho && doc.cabecalho.length) corpo.push(tabelaCabecalho(doc.cabecalho));
     for (const p of doc.paragrafos) corpo.push(paragrafo(p.runs));
     const refs = (doc.logo ? '<w:headerReference w:type="default" r:id="rId2"/>' : '') + '<w:footerReference w:type="default" r:id="rId3"/>';
     return XML + '<w:document ' + NS + '><w:body>' + corpo.join('') +

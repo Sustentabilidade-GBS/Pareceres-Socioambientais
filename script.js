@@ -511,8 +511,6 @@ function limparParecer(p) {
     dados, escolhas, grupos, seq,
     status: str(p.status),
     tema: str(p.tema),
-    // pareceres da versão anterior não tinham cabeçalho
-    cabecalho: p.cabecalho === undefined ? false : !!p.cabecalho,
     criadoEm: str(p.criadoEm) || agoraISO(),
     atualizadoEm: str(p.atualizadoEm) || agoraISO(),
     bibliotecaVersao: str(p.bibliotecaVersao),
@@ -1072,7 +1070,6 @@ function renderEditor() {
   ed.replaceChildren(...state.parecer.paragrafos.map((par) => parParaElemento(par, state.parecer)));
   if (!ed.childNodes.length) ed.append(parParaElemento({ tipo: 'p', runs: [] }, state.parecer));
   aplicarVisibilidade();
-  renderCabecalhoDoc();
   state.lastRange = null;
 }
 
@@ -1153,50 +1150,8 @@ function atualizarCampos() {
   }
   aplicarVisibilidade();
   conferirPainel();
-  renderCabecalhoDoc();
   atualizarPendencias();
   marcarAlterado();
-}
-
-/* ---- Cabeçalho do parecer (bloco 0) ---- */
-/** O cabeçalho traz a linha "Área" quando o modelo fala de uma área (em qualquer opção, escolhida ou não). */
-function usaArea(P) {
-  const usados = camposNoEditor(true);
-  return ['car', 'municipio', 'municipioPA'].some((c) => usados.has(c) || (P.dados && P.dados[c]));
-}
-
-/** Campos que o cabeçalho usa (ficam sempre no painel enquanto o cabeçalho estiver ligado). */
-function camposCabecalho(P) {
-  if (!P.cabecalho) return [];
-  const area = usaArea(P) ? ['car', camposNoEditor(true).has('municipioPA') ? 'municipioPA' : 'municipio'] : [];
-  return ['tipoPessoa', 'nome', 'docNumero', ...area];
-}
-
-/** Linhas do cabeçalho: [rótulo, texto, pendente]. */
-function cabecalhoLinhas(P) {
-  const st = statusDe(P.status);
-  const linhas = [['Status', st ? st.nome : '[STATUS DA ANÁLISE]', !st]];
-  const nome = valorCampo('nome', P);
-  const doc = valorCampo('doc', P);
-  const num = valorCampo('docNumero', P);
-  linhas.push(['Cliente', `${nome || '[NOME / RAZÃO SOCIAL]'} – ${doc || 'CPF/CNPJ'} nº ${num || '[Nº DO CPF/CNPJ]'}`, !nome || !doc || !num]);
-  if (usaArea(P)) {
-    const car = valorCampo('car', P);
-    const mpa = valorCampo('municipioPA', P);
-    const mun = valorCampo('municipio', P) || (mpa ? mpa + '/PA' : '');
-    linhas.push(['Área', `CAR nº ${car || '[Nº DO CAR]'} – ${mun || '[MUNICÍPIO/UF]'}`, !car || !mun]);
-  }
-  if (st && st.condicao) linhas.push(['Condição', maiuscula(st.condicao), false]);
-  return linhas;
-}
-
-function renderCabecalhoDoc() {
-  const box = $('#doc-cabecalho');
-  const P = state.parecer;
-  box.hidden = !P || !P.cabecalho;
-  if (box.hidden) { box.replaceChildren(); return; }
-  box.replaceChildren(el('table', {}, el('tbody', {}, cabecalhoLinhas(P).map(([k, v, pend]) =>
-    el('tr', {}, el('th', { text: k }), el('td', { class: pend ? 'vazio' : '' }, k === 'Status' ? el('strong', { text: v }) : v))))));
 }
 
 function abrirParecer(p, { manterView = false } = {}) {
@@ -1227,7 +1182,7 @@ function novoParecerBase(extra) {
   const agora = agoraISO();
   return {
     id: uid(), modeloId: '', modeloTitulo: '', titulo: '', paragrafos: [],
-    dados: {}, escolhas: {}, grupos: {}, seq: 0, status: '', tema: '', cabecalho: true,
+    dados: {}, escolhas: {}, grupos: {}, seq: 0, status: '', tema: '',
     criadoEm: agora, atualizadoEm: agora, bibliotecaVersao: LIB.versao,
     ...extra,
   };
@@ -1413,7 +1368,7 @@ function inserirTrecho(t) {
 function snapshot() {
   sincronizar();
   const P = state.parecer;
-  return JSON.stringify({ paragrafos: P.paragrafos, dados: P.dados, escolhas: P.escolhas, grupos: P.grupos, status: P.status, cabecalho: P.cabecalho });
+  return JSON.stringify({ paragrafos: P.paragrafos, dados: P.dados, escolhas: P.escolhas, grupos: P.grupos, status: P.status });
 }
 function oferecerDesfazer(snap, msg) {
   const id = state.parecer.id;
@@ -1508,11 +1463,11 @@ async function converterChip(span) {
  * Campos (base) usados no texto que sai no parecer, nas alternativas e nos
  * condicionais. Opções não escolhidas não contam: seus campos saem do painel.
  */
-function camposNoEditor(incluirOcultos = false) {
+function camposNoEditor() {
   const P = state.parecer;
   const s = new Set();
   if (!P) return s;
-  for (const c of $$('#editor .campo')) if (incluirOcultos || !c.closest('.oculto')) camposDoChip(runDoChip(c), P).forEach((x) => s.add(x));
+  for (const c of $$('#editor .campo')) if (!c.closest('.oculto')) camposDoChip(runDoChip(c), P).forEach((x) => s.add(x));
   // o campo que decide um condicional fica sempre, para poder mudar a decisão
   for (const p of $$('#editor [data-se]')) s.add(campoBase(p.dataset.se.split('=')[0]));
   return s;
@@ -1598,19 +1553,14 @@ function renderDados() {
   body.replaceChildren();
   if (!P) return;
   const usados = camposNoEditor();
-  camposCabecalho(P).forEach((c) => usados.add(c));
   const todos = Store.ui('todosCampos') === true;
 
-  // status e cabeçalho
+  // status
   const selStatus = el('select', { id: 'f-status' }, el('option', { value: '', text: '— sem status —' }), STATUS_LISTA.map((s) => el('option', { value: s.id, text: s.nome })));
   selStatus.value = P.status || '';
-  selStatus.addEventListener('change', () => { P.status = selStatus.value; renderCabecalhoDoc(); atualizarPendencias(); marcarAlterado(); });
-  const chkCab = el('input', { type: 'checkbox', id: 'f-cabecalho' });
-  chkCab.checked = !!P.cabecalho;
-  chkCab.addEventListener('change', () => { P.cabecalho = chkCab.checked; renderCabecalhoDoc(); renderDados(); atualizarPendencias(); marcarAlterado(); });
+  selStatus.addEventListener('change', () => { P.status = selStatus.value; marcarAlterado(); });
   body.append(el('fieldset', { class: 'fs' }, el('legend', { text: 'Parecer' }),
-    el('div', { class: 'field', dataset: { campo: 'status' } }, el('label', { for: 'f-status', text: 'Status da análise' }), selStatus),
-    el('label', { class: 'check' }, chkCab, ' Incluir cabeçalho (status, cliente e área)')));
+    el('div', { class: 'field', dataset: { campo: 'status' } }, el('label', { for: 'f-status', text: 'Status da análise' }), selStatus)));
 
   // escolhas do texto: vêm antes dos campos, porque decidem quais campos são necessários
   const opcoes = [];
@@ -1772,8 +1722,8 @@ function selecionarMarcador([na, oa], [nb, ob]) {
 }
 
 /**
- * O que ainda falta decidir ou preencher, na ordem do parecer (cabeçalho
- * primeiro). Cada item: { chave, texto, ir } — ir() leva ao ponto a resolver.
+ * O que ainda falta decidir ou preencher, na ordem do parecer.
+ * Cada item: { chave, texto, ir } — ir() leva ao ponto a resolver.
  */
 function pendencias() {
   const P = state.parecer;
@@ -1781,13 +1731,6 @@ function pendencias() {
   const out = [];
   const add = (chave, texto, ir) => { if (!out.some((x) => x.chave === chave)) out.push({ chave, texto, ir }); };
   const campo = (id, noTexto) => { const b = campoBase(id); add('f:' + b, rotuloCampo(b), () => irParaCampo(b, noTexto)); };
-  if (P.cabecalho && !statusDe(P.status)) add('status', 'Status da análise (cabeçalho)', () => irParaCampo('status'));
-  for (const c of camposCabecalho(P)) {
-    const vazio = c === 'tipoPessoa' ? !valorCampo('doc', P)
-      : c === 'municipio' || c === 'municipioPA' ? !valorCampo('municipio', P) && !valorCampo('municipioPA', P)
-        : !valorCampo(c, P);
-    if (vazio) campo(c);
-  }
   const vistos = {};
   for (const node of $('#editor').children) {
     const par = parDoElemento(node);
@@ -2088,7 +2031,6 @@ function documentoFinal() {
   const P = state.parecer;
   return {
     titulo: TITULO_DOC,
-    cabecalho: P.cabecalho ? cabecalhoLinhas(P).map(([k, v]) => [k, v]) : [],
     paragrafos: paragrafosFinais(),
     logo: typeof LOGO_PNG !== 'undefined' ? LOGO_PNG : null,
     rodape: 'Sustentabilidade – Parecer socioambiental · emitido em ' + new Date().toLocaleDateString('pt-BR'),
@@ -2097,9 +2039,7 @@ function documentoFinal() {
 
 function textoFinal() {
   const doc = documentoFinal();
-  const cab = doc.cabecalho.map(([k, v]) => `${k}: ${v}`).join('\n');
-  const corpo = doc.paragrafos.map((p) => runsText(p.runs).replace(/[ \t]+$/gm, '')).join('\n\n');
-  return cab ? cab + '\n\n' + corpo : corpo;
+  return doc.paragrafos.map((p) => runsText(p.runs).replace(/[ \t]+$/gm, '')).join('\n\n');
 }
 
 function escHtml(s) {
@@ -2108,18 +2048,13 @@ function escHtml(s) {
 
 function htmlFinal() {
   const doc = documentoFinal();
-  const cab = doc.cabecalho.length
-    ? '<table style="border-collapse:collapse;margin:0 0 12pt;font-size:11pt">' + doc.cabecalho.map(([k, v]) =>
-      '<tr><td style="border:1px solid #c7cfd9;background:#e7eef6;padding:3pt 6pt;font-weight:bold;color:#012169">' + escHtml(k) +
-      '</td><td style="border:1px solid #c7cfd9;padding:3pt 6pt">' + (k === 'Status' ? '<b>' + escHtml(v) + '</b>' : escHtml(v)) + '</td></tr>').join('') + '</table>'
-    : '';
   const ps = doc.paragrafos.map((p) => '<p style="margin:0 0 10pt;text-align:justify">' + p.runs.map((r) => {
     let h = escHtml(r.t).replace(/\n/g, '<br>');
     if (r.i) h = '<i>' + h + '</i>';
     if (r.b) h = '<b>' + h + '</b>';
     return h;
   }).join('') + '</p>');
-  return '<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt">' + cab + ps.join('') + '</div>';
+  return '<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt">' + ps.join('') + '</div>';
 }
 
 /** Documento final como página (pré-visualização e impressão/PDF). */
@@ -2127,13 +2062,6 @@ function renderDocumentoFinal(doc, { realcarPendencias = false } = {}) {
   const pagina = el('div', { class: 'doc-final' },
     el('div', { class: 'df-top' }, el('img', { src: 'assets/adm-logo.png', alt: 'ADM' }), el('span', { text: 'Sustentabilidade' })),
     el('h1', { text: doc.titulo }));
-  if (doc.cabecalho.length) {
-    pagina.append(el('table', { class: 'df-cab' }, el('tbody', {}, doc.cabecalho.map(([k, v]) => {
-      const td = el('td', {}, ...(realcarPendencias ? textoComMarcadores(v) : [v]));
-      if (k === 'Status') td.style.fontWeight = '700';
-      return el('tr', {}, el('th', { text: k }), td);
-    }))));
-  }
   for (const p of doc.paragrafos) {
     const e = el('p');
     appendRuns(e, p.runs, { semMarcadores: !realcarPendencias });

@@ -12,9 +12,8 @@
       como nos textos do Word.
    2. Restos do parecer real que viraram texto fixo nos modelos novos
       (órgão do embargo, atividade da empresa, nome de colega, “A empresa”).
-   3. Área analisada escrita com os campos da área embargada: o cabeçalho
-      (linha “Área”) usa Nº do CAR e Município/UF, então a área analisada
-      precisa usar esses campos.
+   3. Área analisada escrita com os campos da área embargada: a área
+      analisada precisa usar Nº do CAR e Município/UF.
    4. Títulos de trechos com lacuna onde havia um campo (“localizada em e
       registrada…”).
    5. Pendências para validação humana dos modelos novos (aparecem no
@@ -98,7 +97,7 @@
     } else avisar('a-alcada-g: parágrafos colados não encontrados.');
   }
 
-  /* 3. Área analisada com os campos da área analisada (cabeçalho) */
+  /* 3. Área analisada com os campos da área analisada */
   ajustarModelo('a-pvg', 'em áreas localizadas no município de {{municipio}}.', 'em áreas localizadas no município de {{municipioEmbargo}}.');
   ajustarModelo('a-pvg', '{{municipio2}}', '{{municipio}}');
   ajustarModelo('a-moratoria', 'está localizada em {{municipioEmbargo3}}, registrada no CAR {{carEmbargo}}', 'está localizada em {{municipio}}, registrada no CAR {{car}}');
@@ -117,7 +116,7 @@
     { id: 'h02', modelos: ['c-prospeccao'], descricao: 'O 3º parágrafo fala em “passivo da Moratória”, mas o “quando usar” também cobre embargo e raio de 150 km. Vírgula entre sujeito e verbo: “A área indicada para análise, também está localizada…”.' },
     { id: 'h03', modelos: ['a-embargo-outros'], descricao: 'O texto citava só a “Lista da Sema-MT”; virou a alternativa [da Lista da Sema-MT / de embargo (órgão)]. Regência: “a área que desejam análise e desbloqueio”.' },
     { id: 'h04', modelos: ['a-alcada-g'], descricao: 'A atividade “Comércio Atacadista de Defensivos Agrícolas” virou o campo Atividade principal, e o tipo de pessoa já vem como PJ. Colocação pronominal: “Considerando que trata-se de cliente INDIRETO” (que se trata).' },
-    { id: 'h05', modelos: ['a-pvg', 'a-moratoria', 'a-embargo-outros', 'c-embargo', 'c-prospeccao'], descricao: 'A área analisada usava os campos da área embargada (Município/CAR do embargo). Passou a usar Município/UF e Nº do CAR, que alimentam a linha “Área” do cabeçalho. Conferir se a redação continua certa.' },
+    { id: 'h05', modelos: ['a-pvg', 'a-moratoria', 'a-embargo-outros', 'c-embargo', 'c-prospeccao'], descricao: 'A área analisada usava os campos da área embargada (Município/CAR do embargo). Passou a usar Município/UF e Nº do CAR. Conferir se a redação continua certa.' },
     { id: 'h06', modelos: ['a-triangulacao'], descricao: 'O texto citava o colega que conferiu as imagens (“Verificado junto com o …”). Trocado por “conforme verificado nas imagens de satélite”. O 1º parágrafo usa “O produtor” fixo.' },
   );
 })();
