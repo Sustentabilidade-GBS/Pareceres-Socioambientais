@@ -62,6 +62,39 @@ const STATUS = [
 ];
 
 /* =====================================================================
+   TEMAS DO CHAMADO (filtro da página inicial e do painel de trechos)
+   "modelos": ids de MODELOS que aparecem no tema (um modelo pode estar
+   em mais de um). "protocolos": temas do histórico (META.tema em
+   biblioteca-historico.js) cujos trechos pertencem a este tema.
+   ===================================================================== */
+const TEMAS = [
+  { id: 'embargo', curto: 'Embargo', nome: 'Embargo ambiental (Ibama, Sema-MT, Semad-GO, ICMBio)',
+    protocolos: ['Embargo Ibama', 'Embargo Sema-MT', 'Embargo Semad-GO', 'Embargo ICMBio', 'Embargo Ibama/ICMBio', 'Embargo IAT-PR', 'Embargo LDI-PA'],
+    modelos: ['a-02', 'a-03', 'a-04', 'a-05', 'a-07', 'b-09', 'c-nova-area', 'c-embargo', 'a-embargo-outros', 'a-triangulacao'] },
+  { id: 'protocolos', curto: 'PVG · PRODES · Moratória · CSA', nome: 'Desmatamento e protocolos (PVG, PRODES, Moratória da Soja, CSA Cerrado)',
+    protocolos: ['Protocolo Verde dos Grãos (PVG-PA)', 'PRODES 2020', 'PRODES 2025', 'Moratória da Soja', 'CSA Cerrado', 'LUC – Land Use Change'],
+    modelos: ['a-08', 'b-09', 'c-12', 'c-13', 'c-14', 'a-prodes2020', 'a-pvg', 'a-csa', 'a-moratoria', 'c-moratoria', 'c-prospeccao'] },
+  { id: 'car', curto: 'CAR', nome: 'Regularidade do CAR (suspenso, cancelado, sem CAR)',
+    protocolos: ['CAR Suspenso/Cancelado', 'Sem CAR', 'Alçada Y – sem CAR', 'Contrato sem CAR', 'Cadastro de CAR (CORP_F0285)'],
+    modelos: ['b-10', 'c-car-suspenso', 'a-car-regularizado', 'e-sem-car', 'd-nao-se-aplica', 'c-alcada-l'] },
+  { id: 'prospeccao', curto: 'Prospecção', nome: 'Prospecção de clientes',
+    protocolos: ['Prospecção de clientes'],
+    modelos: ['a-01', 'a-02', 'a-03', 'a-prospeccao-serasa', 'c-prospeccao'] },
+  { id: 'sem-restricao', curto: 'Sem restrição', nome: 'Sem restrição ou bloqueio sem motivo',
+    protocolos: ['Não há restrições', 'Bloqueio manual sem motivo'],
+    modelos: ['e-sem-restricao', 'a-sem-restricao', 'a-sem-motivo', 'a-01'] },
+  { id: 'cultivo', curto: 'Cultivo de grãos', nome: 'Área de cultivo de grãos (menos de 10%, sem cultivo)',
+    protocolos: ['Cultivo inferior a 10%', 'Inexistência de área de cultivo'],
+    modelos: ['c-11', 'a-cultivo', 'b-09'] },
+  { id: 'cadastro', curto: 'Cadastro e enquadramento', nome: 'Cadastro e enquadramento (direto/indireto, alçadas, selo)',
+    protocolos: ['Enquadramento direto/indireto', 'Alçada Y'],
+    modelos: ['d-reenquadramento', 'd-cliente-indireto', 'd-selo', 'd-nao-se-aplica', 'd-washout', 'a-alcada-g', 'c-alcada-l'] },
+  { id: 'protegidas', curto: 'Áreas protegidas', nome: 'Áreas protegidas e trabalho escravo (UC, Terra Indígena, Lista Suja)',
+    protocolos: ['Unidade de Conservação', 'Terra Indígena/Quilombola', 'Trabalho escravo (Lista Suja)'],
+    modelos: ['a-06', 'a-uc'] },
+];
+
+/* =====================================================================
    CAMPOS PARAMETRIZADOS
    tipo: texto | data | numero | selecao (lista fechada) | lista (sugestões
    com texto livre). "ph" é o texto mostrado entre colchetes enquanto o

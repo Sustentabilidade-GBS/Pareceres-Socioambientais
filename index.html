@@ -32,25 +32,24 @@
       <div class="home">
         <div class="home-hero">
           <h1>Qual parecer você vai emitir?</h1>
-          <p class="hint">Escolha um modelo e preencha só os dados do caso, ou monte o parecer do zero com os trechos padronizados.</p>
+          <p class="hint">Escolha o tema do chamado ou descreva a situação. Os modelos aparecem do mais usado para o menos usado no histórico de pareceres.</p>
           <div class="search home-search">
             <span class="search-icon" aria-hidden="true">⌕</span>
-            <input id="home-search" type="search" placeholder="Pesquisar modelos por palavra (ex.: PVG, Terra Indígena, hedge)…  ( / )" autocomplete="off">
+            <input id="home-search" type="search" placeholder="Descreva a situação (ex.: embargo isolado, CAR suspenso, PVG, hedge)…  ( / )" autocomplete="off">
           </div>
+          <p class="home-zero">Nenhum modelo serve?
+            <button type="button" class="link" data-novo="blocos" title="Estrutura padrão (Identificação … Orientação) com os trechos de cada bloco no painel à direita">☰ Montar por blocos</button> ou
+            <button type="button" class="link" data-novo="branco" title="Página vazia, com os campos e trechos disponíveis">✎ começar em branco</button>
+          </p>
         </div>
-        <div class="start-grid">
-          <button class="start-card" data-novo="blocos">
-            <span class="start-icon" aria-hidden="true">☰</span>
-            <strong>Montar por blocos</strong>
-            <span>Estrutura padrão (Identificação … Orientação) com os trechos de cada bloco no painel à direita.</span>
-          </button>
-          <button class="start-card" data-novo="branco">
-            <span class="start-icon" aria-hidden="true">✎</span>
-            <strong>Em branco</strong>
-            <span>Página vazia para redigir livremente, com os campos e trechos disponíveis.</span>
-          </button>
-          <div id="home-recent" class="start-card start-card-static"></div>
-        </div>
+        <ol id="home-passos" class="passos" aria-label="Como funciona">
+          <li><span class="passo-n">1</span> Escolha o modelo pelo tema ou pela busca</li>
+          <li><span class="passo-n">2</span> No editor, siga a faixa “Faltam N itens”: ela leva a cada campo e escolha</li>
+          <li><span class="passo-n">3</span> Quando ficar verde, copie ou exporte o parecer</li>
+          <li class="passos-ok"><button type="button" class="link" id="btn-passos-ok">Entendi, ocultar</button></li>
+        </ol>
+        <div id="home-continuar" class="home-continuar" hidden></div>
+        <nav id="home-temas" class="temas" aria-label="Temas do chamado"></nav>
         <div id="home-resumo" class="hint"></div>
         <div id="home-modelos"></div>
       </div>
@@ -114,6 +113,14 @@
               </div>
             </div>
           </div>
+          <!-- Progresso: quanto falta e atalho para o próximo item (fica visível ao rolar) -->
+          <div id="progresso" class="progresso" role="status" hidden>
+            <span id="progresso-txt"></span>
+            <span class="progresso-acoes">
+              <button id="btn-prox" type="button" class="btn btn-small btn-primary" title="Leva ao próximo campo, escolha ou texto a redigir (Ctrl+Enter)">Ir para o próximo ›</button>
+              <button id="btn-pend-lista" type="button" class="link">ver lista</button>
+            </span>
+          </div>
           <div class="page" id="page">
             <div id="doc-cabecalho" class="doc-cabecalho" title="Cabeçalho gerado a partir dos dados do caso (desligue no painel à esquerda)"></div>
             <div id="editor" class="editor" contenteditable="true" spellcheck="true" aria-label="Texto do parecer" aria-multiline="true"></div>
@@ -136,10 +143,11 @@
             <button id="tr-panel-label" class="tr-label" type="button">Trechos padronizados</button>
           </div>
           <div id="tr-body" class="tr-body">
-            <input id="tr-search" type="search" placeholder="Pesquisar trechos…" autocomplete="off">
+            <input id="tr-search" type="search" placeholder="Pesquisar trechos (aceita sinônimos)…" autocomplete="off">
+            <select id="tr-tema" aria-label="Tema do chamado"></select>
             <select id="tr-bloco" aria-label="Bloco da estrutura"></select>
             <label class="check"><input type="checkbox" id="tr-seguir"> Seguir o bloco onde está o cursor</label>
-            <p class="hint">Clique no texto do parecer onde quer inserir e depois em “Inserir”. Nada do que já foi escrito é apagado.</p>
+            <p class="hint">Clique no texto do parecer onde quer inserir e depois em “Inserir”. Os primeiros da lista são os que costumam vir depois do parágrafo do cursor.</p>
             <ul id="tr-list" class="tr-list"></ul>
           </div>
         </aside>
@@ -188,6 +196,8 @@
 
   <noscript>Esta ferramenta precisa de JavaScript habilitado.</noscript>
   <script src="modelos.js"></script>
+  <script src="biblioteca-historico.js"></script>
+  <script src="ajustes-historico.js"></script>
   <script src="assets/logo-data.js"></script>
   <script src="docx.js"></script>
   <script src="script.js"></script>

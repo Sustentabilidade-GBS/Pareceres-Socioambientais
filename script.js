@@ -6,8 +6,9 @@
      2. Marcação (texto do modelos.js  <->  "runs" com formatação e campos)
      3. Campos parametrizados (valores, derivados PF/PJ, alternativas)
      4. Armazenamento (localStorage: somente os pareceres do analista)
-     5. Biblioteca (carregar e validar modelos.js)
-     6. Início (cartões dos modelos)
+     5. Biblioteca (carregar e validar modelos.js) e histórico: busca
+        ranqueada por uso, sinônimos, temas e sugestão do próximo trecho
+     6. Início (temas, mais usados e cartões dos modelos)
      7. Visualização de modelo
      8. Editor (renderizar, ler, opções, inserir trechos, apagar, limpar)
      9. Painel "Dados do caso"
@@ -17,8 +18,9 @@
     13. Guia
     14. Interface (abas, diálogos, avisos, atalhos) e inicialização
 
-   A biblioteca (MODELOS, TRECHOS, CAMPOS…) vem de modelos.js e é
-   SOMENTE LEITURA aqui: nenhuma função grava nela.
+   A biblioteca (MODELOS, TRECHOS, CAMPOS…) vem de modelos.js e de
+   biblioteca-historico.js (+ ajustes-historico.js) e é SOMENTE LEITURA
+   aqui: nenhuma função grava nela.
    ===================================================================== */
 'use strict';
 
@@ -85,7 +87,8 @@ function baixarArquivo(nome, conteudo, tipo) {
 /* ===================== 2. Marcação e "runs" ========================
    Um parágrafo é { tipo: 'p' | 'rotulo', runs: [...] } e pode ter:
      grupo + opcao (opção de um grupo), se (condicional), opcional +
-     incluido, etiqueta (rótulo interno mostrado acima), bloco (rótulos).
+     incluido, etiqueta (rótulo interno mostrado acima), bloco (rótulos),
+     origem (id do trecho de onde veio: base da sugestão do próximo).
    Cada run é { t: texto, b?, i?, c?, v? } ou um "chip":
      { campo: 'nome', ph?: 'TEXTO' }   campo parametrizado
      { escolha: 'e3' }                  alternativa local (parecer.escolhas)
@@ -244,19 +247,19 @@ const runsText = (runs) => runs.map((r) => r.t).join('');
 function modeloParaParagrafos(modelo, P) {
   const pars = [];
   for (const item of modelo.paragrafos || []) {
-    if (typeof item === 'string') pars.push({ tipo: 'p', runs: parseMarkup(item, P) });
+    if (typeof item === 'string') pars.push(comOrigem({ tipo: 'p', runs: parseMarkup(item, P) }, item));
     else if (item && Array.isArray(item.opcoes)) {
       const gid = novoGrupo(P, item);
       item.opcoes.forEach((op, i) => {
         const texto = typeof op === 'string' ? op : op.texto;
-        const par = { tipo: 'p', grupo: gid, opcao: i, runs: parseMarkup(String(texto || ''), P) };
+        const par = comOrigem({ tipo: 'p', grupo: gid, opcao: i, runs: parseMarkup(String(texto || ''), P) }, texto);
         par.etiqueta = P.grupos[gid].opcoes[i];
         pars.push(par);
       });
     } else if (item && item.se) {
-      pars.push({ tipo: 'p', se: String(item.se), etiqueta: String(item.rotulo || 'Condicional'), runs: parseMarkup(item.texto, P) });
+      pars.push(comOrigem({ tipo: 'p', se: String(item.se), etiqueta: String(item.rotulo || 'Condicional'), runs: parseMarkup(item.texto, P) }, item.texto));
     } else if (item && item.opcional) {
-      pars.push({ tipo: 'p', opcional: String(item.opcional), etiqueta: String(item.opcional), incluido: !!item.incluido, runs: parseMarkup(item.texto, P) });
+      pars.push(comOrigem({ tipo: 'p', opcional: String(item.opcional), etiqueta: String(item.opcional), incluido: !!item.incluido, runs: parseMarkup(item.texto, P) }, item.texto));
     } else if (item && item.rotulo != null) {
       const par = { tipo: 'rotulo', runs: [mkRun(String(item.rotulo))] };
       if (item.bloco) par.bloco = Number(item.bloco);
@@ -502,10 +505,12 @@ function limparParecer(p) {
       if (typeof par.opcional === 'string' && par.opcional) { o.opcional = par.opcional; o.incluido = !!par.incluido; }
       if (typeof par.etiqueta === 'string' && par.etiqueta) o.etiqueta = par.etiqueta;
       if (Number.isInteger(par.bloco)) o.bloco = par.bloco;
+      if (typeof par.origem === 'string' && par.origem) o.origem = par.origem;
       return o;
     }),
     dados, escolhas, grupos, seq,
     status: str(p.status),
+    tema: str(p.tema),
     // pareceres da versão anterior não tinham cabeçalho
     cabecalho: p.cabecalho === undefined ? false : !!p.cabecalho,
     criadoEm: str(p.criadoEm) || agoraISO(),
@@ -515,7 +520,14 @@ function limparParecer(p) {
 }
 
 /* ======================= 5. Biblioteca ============================== */
-const LIB = { modelos: [], porId: new Map(), categorias: [], trechos: [], problemas: [], versao: '' };
+const LIB = { modelos: [], porId: new Map(), categorias: [], trechos: [], problemas: [], versao: '', origem: new Map() };
+
+/* Histórico (biblioteca-historico.js): uso, palavras-chave, tema, caminhos e sinônimos. Opcional. */
+const META_LIB = typeof META !== 'undefined' ? META : {};
+const SIN_LIB = typeof SINONIMOS !== 'undefined' ? SINONIMOS : {};
+const INICIOS_LIB = typeof INICIOS !== 'undefined' ? INICIOS : {};
+const TEMAS_LIB = typeof TEMAS !== 'undefined' && Array.isArray(TEMAS) ? TEMAS : [];
+const temaPorId = (id) => TEMAS_LIB.find((t) => t.id === id) || null;
 
 const MARKER_RE = /\[\[([^\[\]]+)\]\]|\[([^\[\]]+)\]/g;
 
@@ -561,12 +573,20 @@ function carregarBiblioteca() {
     m.paragrafos.forEach((it, i) => { if (it === undefined) LIB.problemas.push(`Modelo "${m.id}": parágrafo ${i + 1} vazio (chave inexistente em TX?).`); else textosDoItem(it).forEach((t) => conferirCampos(t, 'Modelo "' + m.id + '"')); });
     const cat = LIB.categorias.find((c) => c.id === m.categoria);
     const corpo = textoDoModelo(m);
+    const meta = META_LIB[m.id] || {};
     m._cat = cat ? cat.nome : (m.categoria || 'Sem categoria');
     m._corpo = corpo;
-    m._busca = norm([m.titulo, m._cat, m.subcategoria, m.quandoUsar, (m.obs || []).join(' '), corpo].join(' \n '));
+    m._usos = meta.usos || 0;
+    m._chaves = norm((meta.palavrasChave || []).join(' | '));
+    m._titulo = norm([m.titulo, m.subcategoria, m.quandoUsar].join(' | '));
+    m._busca = norm([m.titulo, m._cat, m.subcategoria, m.quandoUsar, (m.obs || []).join(' '), (meta.palavrasChave || []).join(' '), corpo].join(' \n '));
+    m._temas = TEMAS_LIB.filter((t) => (t.modelos || []).includes(m.id)).map((t) => t.id);
     m._pend = (typeof PENDENCIAS_WORD !== 'undefined' ? PENDENCIAS_WORD : []).filter((p) => (p.modelos || []).includes(m.id));
     LIB.modelos.push(m);
     LIB.porId.set(m.id, m);
+  }
+  for (const t of TEMAS_LIB) {
+    for (const id of t.modelos || []) if (!LIB.porId.has(id)) LIB.problemas.push(`Tema "${t.id}" cita um modelo inexistente: "${id}".`);
   }
 
   const tIds = new Set();
@@ -574,9 +594,17 @@ function carregarBiblioteca() {
     if (!t || !t.id || tIds.has(t.id) || (typeof t.texto !== 'string' && !Array.isArray(t.paragrafos))) { LIB.problemas.push('Trecho inválido ou repetido: ' + (t && t.id)); continue; }
     tIds.add(t.id);
     (Array.isArray(t.paragrafos) ? t.paragrafos.flatMap(textosDoItem) : [t.texto]).forEach((s) => conferirCampos(s, 'Trecho "' + t.id + '"'));
+    const meta = META_LIB[t.id] || {};
     t._blocos = Array.isArray(t.blocos) ? t.blocos.map(Number) : [];
     t._grupo = t.categoria || nomeBloco(t._blocos[0]) || 'Outros';
-    t._busca = norm([t.titulo, t._grupo, t.fonte, textoDoTrecho(t)].join(' '));
+    t._usos = meta.usos || 0;
+    t._tema = meta.tema || '';
+    t._universal = !!meta.universal;
+    t._chaves = norm((meta.palavrasChave || []).join(' | '));
+    t._titulo = norm(t.titulo);
+    t._busca = norm([t.titulo, t._grupo, t.fonte, (meta.palavrasChave || []).join(' '), textoDoTrecho(t)].join(' '));
+    // parágrafo de modelo com o mesmo texto do trecho -> veio deste trecho
+    if (typeof t.texto === 'string' && !LIB.origem.has(t.texto)) LIB.origem.set(t.texto, t.id);
     LIB.trechos.push(t);
   }
   LIB.problemas.forEach((p) => console.warn('[modelos.js]', p));
@@ -610,6 +638,94 @@ function textoDoTrecho(t) {
 
 /** Retorna os termos de busca normalizados. */
 const termos = (q) => norm(q).split(/\s+/).filter(Boolean);
+
+/* ---- Busca ranqueada: sinônimos, uso no histórico, tema e caminho ----
+   Relevância: cada termo digitado (ou um sinônimo) precisa aparecer;
+   vale 3 no título, no “quando usar” ou nas palavras-chave e 1 no texto.
+   Pontuação = relevância × (1 + log10(1 + usos)) × 1,5 se for do tema
+   + 8 × probabilidade de vir depois do parágrafo do cursor.          */
+const LETRA = /[a-z0-9]/;
+
+/** Termos de até 3 letras valem só como palavra: inteira (sinônimos) ou começo de palavra (digitados). */
+function contem(texto, termo, inteira) {
+  if (termo.length > 3) return texto.includes(termo);
+  for (let i = texto.indexOf(termo); i >= 0; i = texto.indexOf(termo, i + 1)) {
+    const fim = i + termo.length;
+    if ((i === 0 || !LETRA.test(texto[i - 1])) && (!inteira || fim >= texto.length || !LETRA.test(texto[fim]))) return true;
+  }
+  return false;
+}
+
+/** Cada termo digitado vira um grupo de alternativas: o termo e os sinônimos (SINONIMOS). */
+function gruposDeBusca(q) {
+  return termos(q).map((t) => {
+    const alt = new Map([[t, false]]);
+    for (const [k, lista] of Object.entries(SIN_LIB)) {
+      const grupo = [k, ...lista].map(norm);
+      if (grupo.includes(t)) alt.set(t, true); // sigla conhecida (“ti”, “uc”): só a palavra inteira
+      if (grupo.some((g) => g === t || (t.length >= 4 && g.startsWith(t)))) grupo.forEach((g) => { if (!alt.has(g)) alt.set(g, true); });
+    }
+    return [...alt].map(([termo, inteira]) => ({ termo, inteira }));
+  });
+}
+
+/** Termos para realçar nos resultados: os digitados e os sinônimos longos. */
+function termosRealce(q) {
+  return [...new Set(gruposDeBusca(q).flat().filter((a) => !a.inteira || a.termo.length >= 4).map((a) => a.termo))];
+}
+
+function pontuar(item, grupos, { contexto, protocolos } = {}) {
+  let rel = 0;
+  for (const alt of grupos) {
+    let melhor = 0;
+    for (const { termo, inteira } of alt) {
+      if (contem(item._titulo, termo, inteira) || contem(item._chaves, termo, inteira)) { melhor = 3; break; }
+      if (!melhor && contem(item._busca, termo, inteira)) melhor = 1;
+    }
+    if (!melhor) return 0;
+    rel += melhor;
+  }
+  const doTema = protocolos && protocolos.includes(item._tema) ? 1.5 : 1;
+  const ctx = contexto ? contexto.get(item.id) || 0 : 0;
+  return (grupos.length ? rel : 1) * (1 + Math.log10(1 + (item._usos || 0))) * doTema + 8 * ctx + (item._universal ? 0.3 : 0);
+}
+
+/** Ordena modelos ou trechos pela pontuação; sem busca, só por uso, tema e caminho. */
+function ranquear(lista, q, opcoes) {
+  const grupos = gruposDeBusca(q || '');
+  return lista
+    .map((it) => ({ it, s: pontuar(it, grupos, opcoes) }))
+    .filter((x) => x.s > 0)
+    .sort((a, b) => b.s - a.s)
+    .map((x) => x.it);
+}
+
+/* ---- Caminho: de qual trecho veio cada parágrafo e o que costuma vir depois ---- */
+const origemDoTexto = (texto) => LIB.origem.get(texto) || null;
+
+/** Grava no parágrafo o trecho de origem do texto (base da sugestão do próximo trecho). */
+function comOrigem(par, texto) {
+  const o = origemDoTexto(texto);
+  if (o) par.origem = o;
+  return par;
+}
+
+/**
+ * Map id -> probabilidade dos trechos que costumam vir depois de "origem".
+ * Sem origem (parecer vazio), usa os inícios mais comuns do tema (INICIOS).
+ */
+function contextoDe(origem, temaId) {
+  const ctx = new Map();
+  const m = origem && META_LIB[origem];
+  if (m && m.seguintes) for (const [id, p] of m.seguintes) ctx.set(id, p);
+  if (!origem) {
+    const tema = temaPorId(temaId);
+    for (const prot of tema ? tema.protocolos || [] : []) {
+      (INICIOS_LIB[prot] || []).forEach((id, i) => ctx.set(id, Math.max(ctx.get(id) || 0, 0.6 - i * 0.1)));
+    }
+  }
+  return ctx;
+}
 
 /** Monta nós de texto com <mark> nos termos encontrados (comparação sem acentos). */
 function realcar(texto, ts) {
@@ -668,7 +784,7 @@ function cartaoModelo(m, ts) {
   const st = statusDe(m.status);
   const [caso, resto] = partesTitulo(m.titulo);
   let trecho = null;
-  if (ts.length && !ts.every((t) => norm(m.titulo + ' ' + (m.quandoUsar || '')).includes(t))) {
+  if (ts.length && !ts.some((t) => norm(m.titulo + ' ' + (m.quandoUsar || '')).includes(t))) {
     const sn = trechoEncontrado(m._corpo, ts);
     if (sn) trecho = el('p', { class: 'mc-snip' }, ...realcar(sn, ts));
   }
@@ -684,50 +800,102 @@ function cartaoModelo(m, ts) {
     el('h3', { class: 'mc-title' }, ...realcar(resto, ts)),
     m.quandoUsar ? el('p', { class: 'mc-use' }, ...realcar(maiuscula(m.quandoUsar), ts)) : null,
     trecho,
-    el('div', { class: 'mc-foot' }, ver, usar));
+    el('div', { class: 'mc-foot' },
+      m._usos ? el('span', { class: 'mc-uso', title: 'Pareceres do histórico nesta situação', text: `usado em ${m._usos} parecer${m._usos === 1 ? '' : 'es'}` }) : null,
+      ver, usar));
   card.addEventListener('click', () => usarModelo(m.id));
   card.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target === card) usarModelo(m.id); });
   return card;
 }
 
+/** Modelos do tema escolhido no Início (todos, se nenhum). */
+function modelosDoTema() {
+  const tema = temaPorId(state.temaInicio);
+  return tema ? LIB.modelos.filter((m) => m._temas.includes(tema.id)) : LIB.modelos;
+}
+
+/** Botões de tema do Início, com a quantidade de modelos de cada um. */
+function renderTemas() {
+  const nav = $('#home-temas');
+  if (!TEMAS_LIB.length) { nav.hidden = true; return; }
+  const botao = (id, nome, n, titulo) => {
+    const on = state.temaInicio === id;
+    return el('button', { type: 'button', class: 'tema' + (on ? ' on' : ''), 'aria-pressed': String(on), title: titulo || null,
+      onclick: () => { state.temaInicio = on && id ? '' : id; renderInicio(); } }, nome, el('span', { class: 'count', text: ' ' + n }));
+  };
+  nav.replaceChildren(el('span', { class: 'temas-label', text: 'Tema do chamado:' }),
+    botao('', 'Todos', LIB.modelos.length),
+    ...TEMAS_LIB.map((t) => botao(t.id, t.curto || t.nome, LIB.modelos.filter((m) => m._temas.includes(t.id)).length, t.nome)));
+}
+
+function secaoModelos(titulo, desc, lista, ts, extra) {
+  return el('section', { class: 'cat' + (extra ? ' ' + extra : '') },
+    el('h2', { class: 'cat-title' }, titulo, el('span', { class: 'count', text: ' ' + lista.length })),
+    desc ? el('p', { class: 'cat-desc', text: desc }) : null,
+    el('div', { class: 'model-grid' }, lista.map((m) => cartaoModelo(m, ts))));
+}
+
+/** Sem resultado: oferece começar sem modelo ou procurar em todos os temas. */
+function semResultado(msg) {
+  const tema = temaPorId(state.temaInicio);
+  return el('div', { class: 'empty' },
+    el('p', { text: msg }),
+    el('div', { class: 'btn-group center' },
+      tema ? el('button', { type: 'button', class: 'btn', onclick: () => { state.temaInicio = ''; renderInicio(); } }, 'Procurar em todos os temas') : null,
+      el('button', { type: 'button', class: 'btn', 'data-novo': 'blocos' }, '☰ Montar por blocos'),
+      el('button', { type: 'button', class: 'btn', 'data-novo': 'branco' }, '✎ Em branco')));
+}
+
+/**
+ * Início: com busca, uma lista única do mais provável ao menos provável;
+ * sem busca, os mais usados e as categorias (desfecho), cada uma ordenada
+ * pelo uso no histórico. O tema escolhido filtra as duas formas.
+ */
 function renderInicio() {
   const box = $('#home-modelos');
   box.replaceChildren();
+  renderTemas();
+  renderRecentes();
   if (!LIB.modelos.length) {
     box.append(el('p', { class: 'hint', text: 'A biblioteca não foi carregada. Verifique se o arquivo modelos.js está na mesma pasta do index.html.' }));
     return;
   }
-  const ts = termos(state.buscaInicio);
-  let total = 0;
-  for (const c of LIB.categorias) {
-    const vis = LIB.modelos.filter((m) => m.categoria === c.id && ts.every((t) => m._busca.includes(t)));
-    if (!vis.length) continue;
-    total += vis.length;
-    box.append(el('section', { class: 'cat' },
-      el('h2', { class: 'cat-title' }, c.nome, el('span', { class: 'count', text: ' ' + vis.length })),
-      c.descricao ? el('p', { class: 'cat-desc', text: c.descricao }) : null,
-      el('div', { class: 'model-grid' }, vis.map((m) => cartaoModelo(m, ts)))));
+  const q = state.buscaInicio.trim();
+  const tema = temaPorId(state.temaInicio);
+  const base = modelosDoTema();
+  const resumo = $('#home-resumo');
+  if (q) {
+    const vis = ranquear(base, q);
+    const ts = termosRealce(q);
+    resumo.textContent = vis.length ? `${vis.length} modelo(s) para “${q}”${tema ? ' no tema ' + (tema.curto || tema.nome) : ''}, do mais provável para o menos provável. Enter abre o primeiro.` : '';
+    box.append(vis.length ? el('div', { class: 'model-grid' }, vis.map((m) => cartaoModelo(m, ts)))
+      : semResultado(`Nenhum modelo encontrado para “${q}”${tema ? ' neste tema' : ''}.`));
+    return;
   }
-  $('#home-resumo').textContent = ts.length
-    ? (total ? `${total} modelo(s) para “${state.buscaInicio.trim()}”. Enter abre o primeiro.` : `Nenhum modelo encontrado para “${state.buscaInicio.trim()}”.`)
-    : '';
-  renderRecentes();
+  resumo.textContent = tema ? `${tema.nome}: ${base.length} modelo(s), separados pelo desfecho.` : '';
+  const porUso = (lista) => [...lista].sort((a, b) => b._usos - a._usos);
+  if (!tema) {
+    const top = porUso(base).filter((m) => m._usos).slice(0, 6);
+    if (top.length) box.append(secaoModelos('Mais usados', 'As situações mais frequentes no histórico de pareceres. Comece por aqui se não souber qual modelo usar.', top, [], 'cat-top'));
+  }
+  for (const c of LIB.categorias) {
+    const vis = porUso(base.filter((m) => m.categoria === c.id));
+    if (vis.length) box.append(secaoModelos(c.nome, c.descricao, vis, []));
+  }
+  if (!box.childNodes.length) box.append(semResultado('Nenhum modelo neste tema.'));
 }
 
-/** Cartão "Continuar" do Início e lista da tela vazia do Editor. */
+/** Faixa "Continuar" do Início e lista da tela vazia do Editor. */
 function renderRecentes() {
   const recentes = Store.listar()
     .sort((a, b) => String(b.atualizadoEm).localeCompare(String(a.atualizadoEm)))
     .slice(0, 4);
-  const card = $('#home-recent');
-  card.replaceChildren(el('span', { class: 'start-icon', 'aria-hidden': 'true', text: '↻' }), el('strong', { text: 'Continuar um parecer' }));
-  if (!recentes.length) card.append(el('span', { text: 'Os pareceres que você salvar aparecem aqui.' }));
-  else {
-    card.append(el('ul', { class: 'recent-list' }, recentes.map((p) => el('li', {},
-      el('button', { type: 'button', class: 'link', onclick: () => abrirParecer(limparParecer(clone(p))) }, p.titulo || p.modeloTitulo || '(sem identificação)'),
-      el('span', { class: 'hint', text: ' · ' + fmtData(p.atualizadoEm) })))),
+  const faixa = $('#home-continuar');
+  faixa.hidden = !recentes.length;
+  faixa.replaceChildren(el('strong', { text: '↻ Continuar:' }),
+    ...recentes.slice(0, 3).map((p) => el('button', { type: 'button', class: 'recent', title: (p.modeloTitulo || '') + ' · ' + fmtData(p.atualizadoEm), onclick: () => abrirParecer(limparParecer(clone(p))) },
+      p.titulo || (p.dados && p.dados.nome) || p.modeloTitulo || '(sem identificação)', el('small', { text: ' · ' + fmtData(p.atualizadoEm) }))),
     el('button', { type: 'button', class: 'link', 'data-goto': 'pareceres', text: 'Ver todos' }));
-  }
 
   const box = $('#start-recent');
   box.replaceChildren();
@@ -796,9 +964,15 @@ async function visualizarModelo(id) {
 const state = {
   view: 'inicio',
   buscaInicio: '',
+  temaInicio: '',
   parecer: null,
   dirty: false,
   lastRange: null,
+  pendUltima: null,      // última pendência visitada por "Ir para o próximo"
+  pendIdx: 0,
+  trLimite: 30,          // trechos mostrados no painel antes de "Mostrar mais"
+  origemCursor: null,    // trecho de origem do parágrafo do cursor (sugestões)
+  assinaturaPainel: '',  // campos e alternativas visíveis quando o painel foi desenhado
 };
 
 /** Insere runs em um contêiner como nós seguros (chips e marcadores [..] realçados). */
@@ -873,6 +1047,7 @@ function parParaElemento(par, P) {
   if (par.se) p.dataset.se = par.se;
   if (par.opcional) { p.dataset.opcional = par.opcional; p.dataset.incluido = par.incluido ? '1' : '0'; }
   if (par.etiqueta) p.dataset.etiqueta = par.etiqueta;
+  if (par.origem) p.dataset.origem = par.origem;
   appendRuns(p, par.runs, { P });
   if (!p.childNodes.length) p.append(document.createElement('br'));
   return p;
@@ -888,6 +1063,7 @@ function parDoElemento(node) {
   if (d.opcional) { par.opcional = d.opcional; par.incluido = d.incluido === '1'; }
   if (d.etiqueta) par.etiqueta = d.etiqueta;
   if (d.bloco) par.bloco = Number(d.bloco);
+  if (d.origem) par.origem = d.origem;
   return par;
 }
 
@@ -976,15 +1152,24 @@ function atualizarCampos() {
     s.classList.toggle('vazio', chipPendente(r, P));
   }
   aplicarVisibilidade();
+  conferirPainel();
   renderCabecalhoDoc();
   atualizarPendencias();
   marcarAlterado();
 }
 
 /* ---- Cabeçalho do parecer (bloco 0) ---- */
+/** O cabeçalho traz a linha "Área" quando o modelo fala de uma área (em qualquer opção, escolhida ou não). */
 function usaArea(P) {
-  const usados = camposNoEditor();
+  const usados = camposNoEditor(true);
   return ['car', 'municipio', 'municipioPA'].some((c) => usados.has(c) || (P.dados && P.dados[c]));
+}
+
+/** Campos que o cabeçalho usa (ficam sempre no painel enquanto o cabeçalho estiver ligado). */
+function camposCabecalho(P) {
+  if (!P.cabecalho) return [];
+  const area = usaArea(P) ? ['car', camposNoEditor(true).has('municipioPA') ? 'municipioPA' : 'municipio'] : [];
+  return ['tipoPessoa', 'nome', 'docNumero', ...area];
 }
 
 /** Linhas do cabeçalho: [rótulo, texto, pendente]. */
@@ -1023,9 +1208,15 @@ function abrirParecer(p, { manterView = false } = {}) {
   $('#editor-empty').hidden = true;
   $('#editor-wrap').hidden = false;
   $('#doc-title').value = p.titulo || '';
+  state.pendUltima = null;
+  state.pendIdx = 0;
+  state.origemCursor = null;
   renderEditor();
   renderDados();
   renderMeta();
+  $('#tr-tema').value = temaPorId(p.tema) ? p.tema : '';
+  state.trLimite = 30;
+  renderListaTrechos();
   $('#btn-restore').disabled = !p.modeloId;
   Store.ui('ultimo', p.id);
   setStatus(Store.obter(p.id) ? 'ok' : '', Store.obter(p.id) ? 'Salvo em ' + fmtData(p.atualizadoEm) : 'Novo parecer (ainda não salvo)');
@@ -1036,7 +1227,7 @@ function novoParecerBase(extra) {
   const agora = agoraISO();
   return {
     id: uid(), modeloId: '', modeloTitulo: '', titulo: '', paragrafos: [],
-    dados: {}, escolhas: {}, grupos: {}, seq: 0, status: '', cabecalho: true,
+    dados: {}, escolhas: {}, grupos: {}, seq: 0, status: '', tema: '', cabecalho: true,
     criadoEm: agora, atualizadoEm: agora, bibliotecaVersao: LIB.versao,
     ...extra,
   };
@@ -1046,7 +1237,8 @@ function usarModelo(id) {
   const m = LIB.porId.get(id);
   if (!m) return toast('Modelo não encontrado.', 'err');
   const anterior = state.parecer && Store.obter(state.parecer.id) ? state.parecer : null;
-  const P = novoParecerBase({ modeloId: m.id, modeloTitulo: m.titulo, status: m.status || '' });
+  const tema = m._temas.includes(state.temaInicio) ? state.temaInicio : m._temas[0] || '';
+  const P = novoParecerBase({ modeloId: m.id, modeloTitulo: m.titulo, status: m.status || '', tema });
   P.paragrafos = modeloParaParagrafos(m, P);
   aplicarPadroes(P, P.paragrafos, m.padroes);
   abrirParecer(P);
@@ -1060,7 +1252,7 @@ function usarModelo(id) {
  * (GUIA.estrutura) entram como rótulos internos, que não saem no parecer.
  */
 function novoParecer(modo) {
-  const P = novoParecerBase({ modeloTitulo: modo === 'blocos' ? 'Parecer montado por blocos' : 'Parecer em branco' });
+  const P = novoParecerBase({ modeloTitulo: modo === 'blocos' ? 'Parecer montado por blocos' : 'Parecer em branco', tema: state.temaInicio });
   if (modo === 'blocos') {
     const linhas = (typeof GUIA !== 'undefined' && Array.isArray(GUIA.estrutura) ? GUIA.estrutura : []).slice(1);
     for (const [num, bloco] of linhas) {
@@ -1096,6 +1288,7 @@ function fecharParecer({ salvar = true, irPara = 'inicio' } = {}) {
   $('#editor-wrap').hidden = true;
   $('#editor-empty').hidden = false;
   Store.ui('ultimo', null);
+  atualizarPendencias();
   setStatus('', '');
   if (irPara) setView(irPara);
 }
@@ -1157,6 +1350,7 @@ function inserirTrecho(t) {
   const P = state.parecer;
   const ed = $('#editor');
   const pars = paragrafosDoTrecho(t, P);
+  pars.forEach((x) => { if (x.tipo === 'p') x.origem = t.id; });
   aplicarPadroes(P, pars);
   const runs = pars[0].runs;
   const varios = pars.length > 1 || !!(pars[0].grupo || pars[0].se || pars[0].opcional || pars[0].tipo === 'rotulo');
@@ -1190,6 +1384,7 @@ function inserirTrecho(t) {
         appendRuns(frag, rs, { P });
         const fim = frag.lastChild;
         range.insertNode(frag);
+        bloco.dataset.origem = t.id;
         inserido = bloco;
         if (fim) { const sel = getSelection(); const r2 = document.createRange(); r2.setStartAfter(fim); r2.collapse(true); sel.removeAllRanges(); sel.addRange(r2); state.lastRange = r2.cloneRange(); }
       }
@@ -1201,12 +1396,16 @@ function inserirTrecho(t) {
     inserido.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     const fimEl = ultimo || inserido;
     if (fimEl.tagName === 'P' && !fimEl.contains(state.lastRange && state.lastRange.startContainer)) {
-      const r2 = document.createRange(); r2.selectNodeContents(fimEl); r2.collapse(false); state.lastRange = r2;
+      // cursor no fim do que foi inserido: o próximo trecho entra depois dele e as sugestões avançam
+      const r2 = document.createRange(); r2.selectNodeContents(fimEl); r2.collapse(false);
+      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r2);
+      state.lastRange = r2.cloneRange();
     }
   }
   aplicarVisibilidade();
   renderDados();
   aoEditar();
+  atualizarSugestoes();
   toast('Trecho inserido: ' + t.titulo, 'ok', 2500);
 }
 
@@ -1305,14 +1504,38 @@ async function converterChip(span) {
 }
 
 /* ===================== 9. Painel "Dados do caso" ===================== */
-/** Campos (base) usados no texto, nas alternativas, nos condicionais e no cabeçalho. */
-function camposNoEditor() {
+/**
+ * Campos (base) usados no texto que sai no parecer, nas alternativas e nos
+ * condicionais. Opções não escolhidas não contam: seus campos saem do painel.
+ */
+function camposNoEditor(incluirOcultos = false) {
   const P = state.parecer;
   const s = new Set();
   if (!P) return s;
-  for (const c of $$('#editor .campo')) camposDoChip(runDoChip(c), P).forEach((x) => s.add(x));
+  for (const c of $$('#editor .campo')) if (incluirOcultos || !c.closest('.oculto')) camposDoChip(runDoChip(c), P).forEach((x) => s.add(x));
+  // o campo que decide um condicional fica sempre, para poder mudar a decisão
   for (const p of $$('#editor [data-se]')) s.add(campoBase(p.dataset.se.split('=')[0]));
   return s;
+}
+
+const escolhasVisiveis = () => $$('#editor .campo[data-escolha]').filter((s) => !s.closest('.oculto')).map((s) => s.dataset.escolha);
+const assinaturaPainel = () => [...camposNoEditor()].sort().join(',') + '|' + escolhasVisiveis().join(',');
+
+/** Redesenha o painel mantendo a rolagem e o foco (ex.: depois de escolher uma opção). */
+function redesenharDados() {
+  const body = $('#dados-body');
+  const topo = body.scrollTop;
+  const ativo = document.activeElement && body.contains(document.activeElement) ? document.activeElement : null;
+  const seletor = ativo ? (ativo.id ? '#' + ativo.id : ativo.name ? `input[name="${ativo.name}"][value="${ativo.value}"]` : '') : '';
+  renderDados();
+  body.scrollTop = topo;
+  const alvo = seletor && $(seletor, body);
+  if (alvo) alvo.focus({ preventScroll: true });
+}
+
+/** Quando uma escolha muda o que sai no parecer, o painel passa a mostrar só os campos que restaram. */
+function conferirPainel() {
+  if (state.parecer && assinaturaPainel() !== state.assinaturaPainel) redesenharDados();
 }
 
 function campoInput(c, P) {
@@ -1375,7 +1598,7 @@ function renderDados() {
   body.replaceChildren();
   if (!P) return;
   const usados = camposNoEditor();
-  if (P.cabecalho) ['tipoPessoa', 'nome', 'docNumero'].forEach((c) => usados.add(c));
+  camposCabecalho(P).forEach((c) => usados.add(c));
   const todos = Store.ui('todosCampos') === true;
 
   // status e cabeçalho
@@ -1386,8 +1609,35 @@ function renderDados() {
   chkCab.checked = !!P.cabecalho;
   chkCab.addEventListener('change', () => { P.cabecalho = chkCab.checked; renderCabecalhoDoc(); renderDados(); atualizarPendencias(); marcarAlterado(); });
   body.append(el('fieldset', { class: 'fs' }, el('legend', { text: 'Parecer' }),
-    el('div', { class: 'field' }, el('label', { for: 'f-status', text: 'Status da análise' }), selStatus),
+    el('div', { class: 'field', dataset: { campo: 'status' } }, el('label', { for: 'f-status', text: 'Status da análise' }), selStatus),
     el('label', { class: 'check' }, chkCab, ' Incluir cabeçalho (status, cliente e área)')));
+
+  // escolhas do texto: vêm antes dos campos, porque decidem quais campos são necessários
+  const opcoes = [];
+  const gruposVistos = new Set();
+  for (const node of $$('#editor [data-grupo]')) {
+    const gid = node.dataset.grupo;
+    if (gruposVistos.has(gid) || !P.grupos[gid]) continue;
+    gruposVistos.add(gid);
+    opcoes.push(blocoGrupo(gid, P));
+  }
+  for (const id of escolhasVisiveis()) {
+    if (P.escolhas[id]) opcoes.push(blocoEscolha(id, P));
+  }
+  for (const node of $$('#editor [data-opcional]')) {
+    const chk = el('input', { type: 'checkbox' });
+    chk.checked = node.dataset.incluido === '1';
+    chk.addEventListener('change', () => { node.dataset.incluido = chk.checked ? '1' : '0'; aplicarVisibilidade(); conferirPainel(); aoEditar(); });
+    opcoes.push(el('label', { class: 'check opt-check' }, chk, ' Incluir: ', node.dataset.opcional));
+  }
+  for (const node of $$('#editor [data-se]')) {
+    const [campo, valor] = node.dataset.se.split('=');
+    opcoes.push(el('p', { class: 'hint cond-info', text: `“${node.dataset.etiqueta || 'Parágrafo condicional'}”: sai somente quando ${rotuloCampo(campo)} = ${valor}.` }));
+  }
+  if (opcoes.length) {
+    body.append(el('fieldset', { class: 'fs fs-opcoes' }, el('legend', { text: 'Escolhas do texto' }),
+      el('p', { class: 'hint', text: 'Decida primeiro: o que não for escolhido sai do parecer, e os campos dele somem daqui.' }), opcoes));
+  }
 
   // campos agrupados
   if (usados.has('tipoPessoa') || todos) body.append(el('fieldset', { class: 'fs' }, el('legend', { text: 'Cliente' }), seletorPessoa(P),
@@ -1402,30 +1652,7 @@ function renderDados() {
   alterna.addEventListener('click', () => { Store.ui('todosCampos', !todos); renderDados(); });
   body.append(el('p', { class: 'hint' }, alterna));
 
-  // opções do texto
-  const opcoes = [];
-  const gruposVistos = new Set();
-  for (const node of $$('#editor [data-grupo]')) {
-    const gid = node.dataset.grupo;
-    if (gruposVistos.has(gid) || !P.grupos[gid]) continue;
-    gruposVistos.add(gid);
-    opcoes.push(blocoGrupo(gid, P));
-  }
-  for (const s of $$('#editor .campo[data-escolha]')) {
-    if (P.escolhas[s.dataset.escolha]) opcoes.push(blocoEscolha(s.dataset.escolha, P));
-  }
-  for (const node of $$('#editor [data-opcional]')) {
-    const chk = el('input', { type: 'checkbox' });
-    chk.checked = node.dataset.incluido === '1';
-    chk.addEventListener('change', () => { node.dataset.incluido = chk.checked ? '1' : '0'; aplicarVisibilidade(); aoEditar(); });
-    opcoes.push(el('label', { class: 'check opt-check' }, chk, ' Incluir: ', node.dataset.opcional));
-  }
-  for (const node of $$('#editor [data-se]')) {
-    const [campo, valor] = node.dataset.se.split('=');
-    opcoes.push(el('p', { class: 'hint cond-info', text: `“${node.dataset.etiqueta || 'Parágrafo condicional'}”: sai somente quando ${rotuloCampo(campo)} = ${valor}.` }));
-  }
-  if (opcoes.length) body.append(el('fieldset', { class: 'fs fs-opcoes' }, el('legend', { text: 'Opções do texto' }), opcoes));
-
+  state.assinaturaPainel = assinaturaPainel();
   atualizarPendencias();
 }
 
@@ -1439,6 +1666,7 @@ function blocoGrupo(gid, P) {
       if (g.multipla) g.escolhidas = $$(`input[name="${nome}"]`).filter((x) => x.checked && x.value !== '').map((x) => Number(x.value));
       else g.escolhidas = [i];
       aplicarVisibilidade();
+      conferirPainel();
       aoEditar();
     });
     return el('label', { class: 'check' }, inp, ' ', rot);
@@ -1450,6 +1678,7 @@ function blocoGrupo(gid, P) {
     g.escolhidas = [];
     $$(`input[name="${nome}"]`).forEach((x) => { if (x !== todas) x.checked = false; });
     aplicarVisibilidade();
+    conferirPainel();
     aoEditar();
   });
   return el('div', { class: 'opt-group', dataset: { grupoForm: gid } },
@@ -1469,73 +1698,166 @@ function blocoEscolha(id, P) {
     el('label', { text: e.contexto ? '…' + e.contexto : 'Alternativa' }), sel);
 }
 
-/** Leva o cursor ao campo do painel correspondente a um chip. */
-function focarNoPainel(chip) {
+/** Destaca e foca um item do painel de dados (abre o painel e redesenha se preciso). */
+function irParaPainel(seletor, noTexto) {
   recolherDados(false);
   const body = $('#dados-body');
-  let alvo;
-  if (chip.dataset.escolha) alvo = $(`[data-escolha-form="${chip.dataset.escolha}"]`, body);
-  else alvo = $(`.field[data-campo="${campoBase(chip.dataset.campo)}"]`, body);
-  if (!alvo) { renderDados(); return; }
+  let alvo = $(seletor, body);
+  if (!alvo) { renderDados(); alvo = $(seletor, body); }
+  if (noTexto && noTexto.isConnected) {
+    noTexto.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    noTexto.classList.add('flash');
+    setTimeout(() => noTexto.classList.remove('flash'), 1300);
+  }
+  if (!alvo) return;
   alvo.scrollIntoView({ block: 'center', behavior: 'smooth' });
   alvo.classList.add('flash');
   setTimeout(() => alvo.classList.remove('flash'), 1300);
-  const f = $('input, select, button', alvo);
+  const f = $('input:checked, input, select, button', alvo);
   if (f) f.focus({ preventScroll: true });
 }
 
-/** Lista do que ainda falta decidir ou preencher. */
-function listarPendencias() {
+const irParaCampo = (id, noTexto) => irParaPainel(`.field[data-campo="${id}"]`, noTexto);
+
+/** Leva o cursor ao campo do painel correspondente a um chip. */
+function focarNoPainel(chip) {
+  if (chip.dataset.escolha) irParaPainel(`[data-escolha-form="${chip.dataset.escolha}"]`);
+  else irParaCampo(campoBase(chip.dataset.campo));
+}
+
+/** Marcadores [texto a redigir] de um parágrafo, com a posição de cada um no texto da tela. */
+function marcadoresDe(node) {
+  const partes = [];
+  let texto = '';
+  const w = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+  for (let n = w.nextNode(); n; n = w.nextNode()) {
+    if (n.parentElement.closest('.campo')) continue;
+    partes.push([n, texto.length]);
+    texto += n.data;
+  }
+  const ponto = (i, fim) => {
+    for (const [n, ini] of partes) if (fim ? i > ini && i <= ini + n.data.length : i >= ini && i < ini + n.data.length) return [n, i - ini];
+    return null;
+  };
+  const out = [];
+  MARKER_RE.lastIndex = 0;
+  let m;
+  while ((m = MARKER_RE.exec(texto))) {
+    const a = ponto(m.index, false);
+    const b = ponto(m.index + m[0].length, true);
+    if (a && b) out.push({ texto: m[0], a, b });
+  }
+  return out;
+}
+
+/** Seleciona no texto um marcador [..] (sem o destaque amarelo, para digitar por cima). */
+function selecionarMarcador([na, oa], [nb, ob]) {
+  if (!na.isConnected) return;
+  const ph = na === nb && na.parentElement.closest('.ph');
+  if (ph && ph.textContent === na.data) {
+    const t = document.createTextNode(ph.textContent);
+    ph.replaceWith(t);
+    na = nb = t;
+  }
+  const r = document.createRange();
+  r.setStart(na, oa);
+  r.setEnd(nb, ob);
+  const ed = $('#editor');
+  ed.focus({ preventScroll: true });
+  const sel = getSelection();
+  sel.removeAllRanges();
+  sel.addRange(r);
+  state.lastRange = r.cloneRange();
+  na.parentElement.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+/**
+ * O que ainda falta decidir ou preencher, na ordem do parecer (cabeçalho
+ * primeiro). Cada item: { chave, texto, ir } — ir() leva ao ponto a resolver.
+ */
+function pendencias() {
   const P = state.parecer;
   if (!P) return [];
-  sincronizar();
   const out = [];
-  const add = (s) => { if (!out.includes(s)) out.push(s); };
-  if (P.cabecalho) {
-    if (!statusDe(P.status)) add('Status da análise (cabeçalho)');
-    for (const [k, , pend] of cabecalhoLinhas(P)) if (pend && k !== 'Status') add(`Cabeçalho – ${k}`);
+  const add = (chave, texto, ir) => { if (!out.some((x) => x.chave === chave)) out.push({ chave, texto, ir }); };
+  const campo = (id, noTexto) => { const b = campoBase(id); add('f:' + b, rotuloCampo(b), () => irParaCampo(b, noTexto)); };
+  if (P.cabecalho && !statusDe(P.status)) add('status', 'Status da análise (cabeçalho)', () => irParaCampo('status'));
+  for (const c of camposCabecalho(P)) {
+    const vazio = c === 'tipoPessoa' ? !valorCampo('doc', P)
+      : c === 'municipio' || c === 'municipioPA' ? !valorCampo('municipio', P) && !valorCampo('municipioPA', P)
+        : !valorCampo(c, P);
+    if (vazio) campo(c);
   }
-  const gruposPend = new Set();
-  for (const par of P.paragrafos) {
+  const vistos = {};
+  for (const node of $('#editor').children) {
+    const par = parDoElemento(node);
     if (par.tipo === 'rotulo') continue;
     const vis = visibilidade(par, P);
     if (vis === 'off') continue;
-    if (par.grupo && P.grupos[par.grupo] && !P.grupos[par.grupo].escolhidas.length) gruposPend.add(par.grupo);
-    if (par.se && vis === 'pendente') add(`${rotuloCampo(par.se.split('=')[0])} (define o parágrafo “${par.etiqueta || 'condicional'}”)`);
-    for (const r of par.runs) {
-      if (ehChip(r)) {
-        if (!chipPendente(r, P)) continue;
-        if (r.campo) add(rotuloCampo(r.campo));
-        else {
-          const e = P.escolhas[r.escolha];
-          if (e && e.valor == null) add('Alternativa: …' + (e.contexto || '').slice(-40));
-          else tokenize(e.opcoes[e.valor]).filter((tk) => tk.tipo === 'campo' && !valorCampo(tk.campo, P)).forEach((tk) => add(rotuloCampo(tk.campo)));
-        }
-      } else {
-        MARKER_RE.lastIndex = 0;
-        let m;
-        while ((m = MARKER_RE.exec(r.t))) add('Texto a redigir: ' + (m[0].length > 50 ? m[0].slice(0, 48) + '…]' : m[0]));
-      }
+    const g = par.grupo && P.grupos[par.grupo];
+    if (g && !g.escolhidas.length) add('g:' + par.grupo, `Escolha – ${g.nome} (nenhuma opção escolhida)`, () => irParaPainel(`[data-grupo-form="${par.grupo}"]`, node));
+    if (par.se && vis === 'pendente') {
+      const c = campoBase(par.se.split('=')[0]);
+      add('f:' + c, `${rotuloCampo(c)} (define o parágrafo “${par.etiqueta || 'condicional'}”)`, () => irParaCampo(c, node));
+    }
+    for (const s of $$('.campo', node)) {
+      const r = runDoChip(s);
+      if (!chipPendente(r, P)) continue;
+      if (r.campo) { campo(r.campo, s); continue; }
+      const e = P.escolhas[r.escolha];
+      if (!e) continue;
+      if (e.valor == null) add('e:' + r.escolha, 'Alternativa: …' + (e.contexto || '').slice(-40), () => irParaPainel(`[data-escolha-form="${r.escolha}"]`, s));
+      else tokenize(e.opcoes[e.valor]).filter((tk) => tk.tipo === 'campo' && !valorCampo(tk.campo, P)).forEach((tk) => campo(tk.campo, s));
+    }
+    for (const mk of marcadoresDe(node)) {
+      vistos[mk.texto] = (vistos[mk.texto] || 0) + 1;
+      const curto = mk.texto.length > 50 ? mk.texto.slice(0, 48) + '…]' : mk.texto;
+      add('m:' + mk.texto + ':' + vistos[mk.texto], 'Texto a redigir: ' + curto, () => selecionarMarcador(mk.a, mk.b));
     }
   }
-  for (const gid of gruposPend) add(`Opções – ${P.grupos[gid].nome} (nenhuma escolhida)`);
   return out;
+}
+
+const listarPendencias = () => pendencias().map((p) => p.texto);
+
+/**
+ * Vai para a próxima pendência. Se a última visitada foi resolvida, a
+ * próxima é a que ocupou o lugar dela; se não, pula para a seguinte.
+ */
+function irParaProxima() {
+  const lista = pendencias();
+  if (!lista.length) { atualizarPendencias.flush(); return toast('Nada pendente. O parecer está pronto para copiar ou exportar.', 'ok'); }
+  let i = lista.findIndex((p) => p.chave === state.pendUltima);
+  i = i >= 0 ? (i + 1) % lista.length : Math.min(state.pendIdx, lista.length - 1);
+  state.pendUltima = lista[i].chave;
+  state.pendIdx = i;
+  lista[i].ir();
 }
 
 const atualizarPendencias = debounce(() => {
   const chip = $('#dados-pend');
-  if (!state.parecer) { chip.hidden = true; return; }
-  const n = listarPendencias().length;
+  const barra = $('#progresso');
+  if (!state.parecer) { chip.hidden = true; barra.hidden = true; return; }
+  const n = pendencias().length;
   chip.hidden = !n;
   chip.textContent = n + (n === 1 ? ' pendência' : ' pendências');
+  barra.hidden = false;
+  barra.classList.toggle('ok', !n);
+  $('#progresso-txt').textContent = n
+    ? `Falta${n === 1 ? '' : 'm'} ${n} ${n === 1 ? 'item' : 'itens'} para concluir (campos, escolhas e textos a redigir).`
+    : 'Tudo preenchido. Revise o texto e use “Copiar parecer” ou “Exportar”.';
+  $('#btn-prox').hidden = !n;
+  $('#btn-pend-lista').hidden = !n;
 }, 250);
 
 async function mostrarPendencias() {
-  const lista = listarPendencias();
+  const lista = pendencias();
+  const itens = lista.map((p) => el('li', {}, el('button', { type: 'button', class: 'link', onclick: () => { $('#dialog').close(''); state.pendUltima = p.chave; p.ir(); } }, p.texto)));
   await abrirDialogo({
     titulo: lista.length ? `Pendências do parecer (${lista.length})` : 'Nenhuma pendência',
     narrow: true,
-    corpo: [lista.length ? el('ul', { class: 'pend-mini' }, lista.map((x) => el('li', { text: x }))) : el('p', { text: 'Todos os campos e opções foram preenchidos.' })],
+    corpo: [lista.length ? el('p', { class: 'hint', text: 'Clique num item para ir até ele.' }) : null,
+      lista.length ? el('ul', { class: 'pend-mini' }, itens) : el('p', { text: 'Todos os campos e opções foram preenchidos.' })],
     acoes: [{ label: 'Fechar', value: 'fechar', cls: 'btn-primary' }],
   });
 }
@@ -1568,41 +1890,114 @@ function recolherDados(recolher) {
 }
 
 /* ================ 10. Painel de trechos padronizados ================ */
-function filtrarTrechos(q, filtro) {
-  const ts = termos(q);
-  return LIB.trechos.filter((t) => {
-    if (filtro === 'tf' && t.categoria !== 'Trechos fundamentados') return false;
-    if (filtro && filtro !== 'tf' && !t._blocos.includes(Number(filtro))) return false;
-    return ts.every((x) => t._busca.includes(x));
-  });
+/** O tema só esconde trechos típicos de OUTRO tema; os gerais e universais ficam. */
+function trechoNoTema(t, tema) {
+  if (!tema || !t._tema || t._universal || t._tema === 'Geral' || t._tema === '—') return true;
+  return (tema.protocolos || []).includes(t._tema);
 }
 
+function filtrarTrechos(q, filtro, tema, contexto) {
+  const base = LIB.trechos.filter((t) => {
+    if (filtro === 'tf' && t.categoria !== 'Trechos fundamentados') return false;
+    if (filtro && filtro !== 'tf' && !t._blocos.includes(Number(filtro))) return false;
+    return trechoNoTema(t, tema);
+  });
+  return ranquear(base, q, { contexto, protocolos: tema ? tema.protocolos : null });
+}
+
+/**
+ * Trecho de origem do parágrafo do cursor, ou do parágrafo anterior mais
+ * próximo que tenha origem (o cursor costuma estar num parágrafo novo, vazio).
+ * Sem cursor no texto, vale o fim do parecer (onde "Inserir" coloca o trecho).
+ */
+function origemNoCursor() {
+  const ed = $('#editor');
+  const r = state.lastRange && ed.contains(state.lastRange.startContainer) ? state.lastRange : null;
+  for (let n = r ? closestBloco(r.startContainer) : ed.lastElementChild; n; n = n.previousElementSibling) {
+    if (n.dataset.origem && !n.classList.contains('oculto')) return n.dataset.origem;
+  }
+  return null;
+}
+
+/** Trechos que costumam vir a seguir (ou começar o parecer do tema), sem os que já estão no texto. */
+function sugestoesTrechos(contexto) {
+  const noTexto = new Set($$('#editor p[data-origem]').filter((p) => !p.classList.contains('oculto')).map((p) => p.dataset.origem));
+  return [...contexto]
+    .filter(([id, p]) => p >= 0.05 && !noTexto.has(id))
+    .sort((a, b) => b[1] - a[1])
+    .map(([id, p]) => ({ t: LIB.trechos.find((x) => x.id === id), p }))
+    .filter((x) => x.t)
+    .slice(0, 4);
+}
+
+function itemTrecho(t, ts, { prob, inicio } = {}) {
+  const tx = el('div', { class: 'tx' });
+  const P = state.parecer ? { ...state.parecer, escolhas: {}, grupos: {}, seq: 0 } : novoContexto();
+  paragrafosDoTrecho(t, P).filter((x) => x.tipo === 'p').forEach((x, i) => { if (i) tx.append(' ¶ '); appendRuns(tx, x.runs, { realce: ts, P }); });
+  const ins = el('button', { type: 'button', class: 'btn btn-small btn-primary', text: 'Inserir' });
+  // mousedown sem foco: preserva a posição do cursor no editor
+  ins.addEventListener('mousedown', (e) => e.preventDefault());
+  ins.addEventListener('click', () => inserirTrecho(t));
+  const ver = el('button', { type: 'button', class: 'btn btn-small', text: 'Ver tudo' });
+  ver.addEventListener('mousedown', (e) => e.preventDefault());
+  ver.addEventListener('click', () => visualizarTrecho(t));
+  const fonte = String(t.fonte || '').replace(/\s*\(\d+ usos?\)/, '');
+  const info = [
+    t._blocos.length ? 'Bloco ' + t._blocos.join(' e ') : '',
+    fonte,
+    t._usos ? `${t._usos} uso${t._usos === 1 ? '' : 's'}` : '',
+    t._tema && t._tema !== 'Geral' && t._tema !== '—' ? t._tema : '',
+  ].filter(Boolean).join(' · ');
+  return el('li', { class: 'tr-item' + (t.categoria === 'Trechos fundamentados' ? ' tr-novo' : '') + (prob || inicio ? ' tr-sug' : '') },
+    prob ? el('div', { class: 'tr-prob', text: `vem a seguir em ${Math.round(prob * 100)}% dos pareceres` }) : null,
+    inicio ? el('div', { class: 'tr-prob', text: 'início frequente neste tema' }) : null,
+    el('div', { class: 'tt' }, ...realcar(t.titulo, ts)),
+    el('div', { class: 'src', text: info }),
+    tx, el('div', { class: 'row' }, ins, ver));
+}
+
+/**
+ * Lista do painel. Sem busca, mostra primeiro o que costuma vir depois do
+ * parágrafo do cursor (caminhos do histórico) e depois os mais usados do
+ * bloco/tema. Com busca, ordena por relevância × uso.
+ */
 function renderListaTrechos() {
   const ul = $('#tr-list');
   ul.replaceChildren();
-  const q = $('#tr-search').value;
-  const ts = termos(q);
+  const q = $('#tr-search').value.trim();
+  const ts = termosRealce(q);
   const filtro = $('#tr-bloco').value;
-  const itens = filtrarTrechos(q, filtro);
-  let grupo = null;
-  for (const t of itens) {
-    if (t._grupo !== grupo) { ul.append(el('li', { class: 'tr-cat', text: t._grupo })); grupo = t._grupo; }
-    const tx = el('div', { class: 'tx' });
-    const P = state.parecer ? { ...state.parecer, escolhas: {}, grupos: {}, seq: 0 } : novoContexto();
-    paragrafosDoTrecho(t, P).filter((x) => x.tipo === 'p').forEach((x, i) => { if (i) tx.append(' ¶ '); appendRuns(tx, x.runs, { realce: ts, P }); });
-    const ins = el('button', { type: 'button', class: 'btn btn-small btn-primary', text: 'Inserir' });
-    // mousedown sem foco: preserva a posição do cursor no editor
-    ins.addEventListener('mousedown', (e) => e.preventDefault());
-    ins.addEventListener('click', () => inserirTrecho(t));
-    const ver = el('button', { type: 'button', class: 'btn btn-small', text: 'Ver tudo' });
-    ver.addEventListener('mousedown', (e) => e.preventDefault());
-    ver.addEventListener('click', () => visualizarTrecho(t));
-    ul.append(el('li', { class: 'tr-item' + (t.categoria === 'Trechos fundamentados' ? ' tr-novo' : '') },
-      el('div', { class: 'tt' }, ...realcar(t.titulo, ts)),
-      el('div', { class: 'src', text: 'Fonte: ' + (t.fonte || '—') }),
-      tx, el('div', { class: 'row' }, ins, ver)));
+  const tema = temaPorId($('#tr-tema').value);
+  const origem = state.parecer ? origemNoCursor() : null;
+  state.origemCursor = origem;
+  const contexto = state.parecer ? contextoDe(origem, tema && tema.id) : new Map();
+  let itens = filtrarTrechos(q, filtro, tema, contexto);
+  if (!q) {
+    const sug = sugestoesTrechos(contexto);
+    if (sug.length) {
+      ul.append(el('li', { class: 'tr-cat tr-cat-sug', text: origem ? 'Sugeridos para o próximo parágrafo' : 'Para começar o parecer' }));
+      sug.forEach(({ t, p }) => ul.append(itemTrecho(t, ts, origem ? { prob: p } : { inicio: true })));
+      const ja = new Set(sug.map((x) => x.t.id));
+      itens = itens.filter((t) => !ja.has(t.id));
+    }
+    ul.append(el('li', { class: 'tr-cat', text: 'Mais usados' + (filtro && filtro !== 'tf' ? ' no bloco ' + filtro : '') + (tema ? ' · ' + (tema.curto || tema.nome) : '') }));
+  } else {
+    ul.append(el('li', { class: 'tr-cat', text: `${itens.length} trecho(s) para “${q}”` }));
   }
-  if (!itens.length) ul.append(el('li', { class: 'hint', text: 'Nenhum trecho encontrado.' }));
+  itens.slice(0, state.trLimite).forEach((t) => ul.append(itemTrecho(t, ts)));
+  if (itens.length > state.trLimite) {
+    const mais = el('button', { type: 'button', class: 'btn btn-small', text: `Mostrar mais (${itens.length - state.trLimite})` });
+    mais.addEventListener('mousedown', (e) => e.preventDefault());
+    mais.addEventListener('click', () => { state.trLimite += 30; renderListaTrechos(); });
+    ul.append(el('li', { class: 'tr-mais' }, mais));
+  }
+  if (!itens.length) ul.append(el('li', { class: 'hint', text: 'Nenhum trecho encontrado.' + (tema || filtro ? ' Experimente “Todos os temas” ou “Todos os blocos”.' : '') }));
+}
+
+/** Atualiza as sugestões quando o cursor passa para um parágrafo de outra origem. */
+function atualizarSugestoes() {
+  if (!state.parecer || $('#tr-search').value.trim()) return;
+  if (origemNoCursor() !== state.origemCursor) renderListaTrechos();
 }
 
 function renderTrechosPainel() {
@@ -1611,8 +2006,16 @@ function renderTrechosPainel() {
   sel.replaceChildren(el('option', { value: '', text: 'Todos os blocos' }),
     ...linhas.map((l) => el('option', { value: String(l[0]), text: `Bloco ${l[0]} – ${l[1]}` })),
     el('option', { value: 'tf', text: '★ Trechos fundamentados (novos)' }));
-  $('#tr-search').addEventListener('input', debounce(renderListaTrechos, 120));
-  sel.addEventListener('change', renderListaTrechos);
+  const selTema = $('#tr-tema');
+  selTema.replaceChildren(el('option', { value: '', text: 'Todos os temas' }), ...TEMAS_LIB.map((t) => el('option', { value: t.id, text: t.nome })));
+  selTema.hidden = !TEMAS_LIB.length;
+  const refazer = () => { state.trLimite = 30; renderListaTrechos(); };
+  $('#tr-search').addEventListener('input', debounce(refazer, 120));
+  sel.addEventListener('change', refazer);
+  selTema.addEventListener('change', () => {
+    if (state.parecer) { state.parecer.tema = selTema.value; marcarAlterado(); }
+    refazer();
+  });
   const seguir = $('#tr-seguir');
   seguir.checked = Store.ui('trSeguir') !== false;
   seguir.addEventListener('change', () => Store.ui('trSeguir', seguir.checked));
@@ -1631,13 +2034,14 @@ function blocoDoCursor() {
   return null;
 }
 
+/** Cursor mudou de lugar: o painel segue o bloco (se marcado) e atualiza as sugestões. */
 const seguirBloco = debounce(() => {
-  if (!$('#tr-seguir').checked || !state.parecer) return;
-  const b = blocoDoCursor();
-  if (!b) return;
+  if (!state.parecer) return;
+  const b = $('#tr-seguir').checked ? blocoDoCursor() : null;
   const alvo = b === '2' ? '1' : b;
   const sel = $('#tr-bloco');
-  if (sel.value !== alvo) { sel.value = alvo; renderListaTrechos(); }
+  if (alvo && sel.value !== alvo) { sel.value = alvo; state.trLimite = 30; renderListaTrechos(); }
+  else atualizarSugestoes();
 }, 200);
 
 /** Mostra ou esconde o painel de trechos (preferência guardada no navegador). */
@@ -2007,20 +2411,23 @@ function renderGuia() {
   }
 
   g.append(el('h3', { text: 'Como usar a ferramenta' }), el('ol', {},
-    el('li', { text: 'No Início, escolha um modelo (os cartões mostram o status e “quando usar”; 👁︎ mostra o texto sem abrir) ou comece do zero: “Montar por blocos” traz a estrutura padrão, e “Em branco” abre uma página vazia.' }),
-    el('li', { text: 'No Editor, preencha o painel “Dados do caso” (à esquerda). O tipo de pessoa troca sozinho “O produtor”/“A empresa”, “CPF”/“CNPJ” e “com este produtor”/“com esta empresa”. Cada campo preenchido é aplicado em todo o texto.' }),
-    el('li', { text: 'Em “Opções do texto”, escolha a opção de fundamentação ou de operação que se aplica (as outras saem do parecer), as alternativas entre colchetes e os parágrafos opcionais. Parágrafos condicionais entram sozinhos conforme o campo (ex.: CAR “Suspenso”).' }),
-    el('li', { text: 'Edite o texto livremente. Clique num campo destacado para ir ao painel; duplo clique converte o campo em texto comum. Use “Apagar seleção” para remover trechos, o × à esquerda para remover um parágrafo inteiro e “Limpar” para esvaziar o texto (todos podem ser desfeitos).' }),
-    el('li', { text: 'O painel “Trechos padronizados” (à direita) insere textos na posição do cursor. O filtro por bloco pode seguir o cursor quando o parecer tem a estrutura de blocos.' }),
-    el('li', { text: 'Pré-visualize, copie ou exporte (Word, PDF ou .txt). Se faltar algo, a ferramenta lista as pendências antes. No PDF, escolha “Salvar como PDF” na janela de impressão.' })));
+    el('li', { text: 'No Início, escolha o tema do chamado (Embargo, CAR, Prospecção…) ou pesquise pela situação. A busca entende sinônimos (ex.: “pvg” acha Protocolo Verde; “suspenso” acha cancelado e Resolução BCB) e mostra primeiro os modelos mais usados no histórico. Na dúvida, comece pelos “Mais usados”. 👁︎ mostra o texto sem abrir.' }),
+    el('li', { text: 'Nenhum modelo serve? Use “Montar por blocos” (estrutura padrão, com os trechos de cada bloco no painel à direita) ou “Em branco”.' }),
+    el('li', { text: 'No Editor, siga a faixa acima do texto: ela diz quantos itens faltam, e “Ir para o próximo” leva a cada um, na ordem do parecer (campo no painel à esquerda, escolha de opção ou [texto a redigir], que já fica selecionado para você digitar por cima).' }),
+    el('li', { text: 'No painel “Dados do caso”, decida primeiro as “Escolhas do texto”: o que não for escolhido sai do parecer, e os campos dele somem do painel. Depois preencha os campos; cada um é aplicado em todo o texto. O tipo de pessoa troca sozinho “O produtor”/“A empresa”, “CPF”/“CNPJ” etc.' }),
+    el('li', { text: 'Edite o texto livremente. Clique num campo destacado para ir ao painel; duplo clique converte o campo em texto comum. Use “Apagar seleção”, o × à esquerda (remove o parágrafo) e “Limpar” — tudo pode ser desfeito.' }),
+    el('li', { text: 'O painel “Trechos padronizados” (à direita) sugere o que costuma vir depois do parágrafo onde está o cursor (caminhos do histórico) e lista os mais usados do bloco e do tema. “Inserir” coloca o trecho na posição do cursor.' }),
+    el('li', { text: 'Quando a faixa ficar verde, pré-visualize, copie ou exporte (Word, PDF ou .txt). No PDF, escolha “Salvar como PDF” na janela de impressão.' })));
 
+  const hist = typeof BIBLIOTECA_HISTORICO_VERSAO !== 'undefined';
   g.append(el('div', { class: 'box' }, el('h4', { text: 'Onde ficam os dados' }),
-    el('p', { text: 'Os modelos vêm do arquivo modelos.js (somente leitura na tela). Os pareceres em elaboração ficam salvos automaticamente apenas neste navegador, neste computador — não há sincronização entre analistas ou máquinas. Faça backups em “Meus pareceres”.' }),
-    el('p', { text: 'Versão da biblioteca: ' + (LIB.versao || '—') + ' · ' + LIB.modelos.length + ' modelos · ' + LIB.trechos.length + ' trechos · ' + LISTA_CAMPOS.length + ' campos.' })));
+    el('p', { text: 'Os modelos vêm dos arquivos modelos.js (textos do Word) e biblioteca-historico.js (situações e trechos frequentes no histórico de pareceres, com as correções de ajustes-historico.js) — somente leitura na tela. Os pareceres em elaboração ficam salvos automaticamente apenas neste navegador, neste computador; não há sincronização entre analistas ou máquinas. Faça backups em “Meus pareceres”.' }),
+    el('p', { text: 'Versão da biblioteca: ' + (LIB.versao || '—') + (hist ? ' · histórico: ' + BIBLIOTECA_HISTORICO_VERSAO : ' · histórico não carregado') + ' · ' + LIB.modelos.length + ' modelos · ' + LIB.trechos.length + ' trechos · ' + LISTA_CAMPOS.length + ' campos.' })));
 
   g.append(el('div', { class: 'box' }, el('h4', { text: 'Atalhos de teclado' }), el('ul', {},
     el('li', { text: '/ — pesquisar modelos no Início (Enter abre o primeiro resultado; Esc limpa)' }),
     el('li', { text: 'Alt+1 a Alt+4 — Início, Editor, Meus pareceres, Guia' }),
+    el('li', { text: 'Ctrl+Enter — ir para o próximo item pendente do parecer' }),
     el('li', { text: 'Ctrl+S — salvar parecer · Ctrl+P — PDF/impressão' }),
     el('li', { text: 'Ctrl+B / Ctrl+I — negrito / itálico · Ctrl+Z / Ctrl+Y — desfazer / refazer' }))));
 
@@ -2033,7 +2440,7 @@ function renderGuia() {
   if (G.guiaRapido) g.append(el('h3', { text: '2.1 Guia rápido – qual modelo usar' }), tabela(G.guiaRapido));
   if (pend.length) {
     g.append(el('h3', { text: 'Pendências para validação humana' }),
-      el('p', { class: 'hint', text: 'Pontos encontrados na importação dos textos. Os textos foram mantidos como recebidos; ajustes devem ser decididos pela área responsável e feitos em modelos.js.' }),
+      el('p', { class: 'hint', text: 'Pontos encontrados na importação dos textos do Word (mantidos como recebidos) e na revisão dos modelos do histórico (os ajustes já aplicados estão descritos). Decisões da área responsável: textos do Word em modelos.js; modelos do histórico em ajustes-historico.js.' }),
       el('ul', { class: 'pend-list' }, pend.map((p) => el('li', {},
         el('div', { text: p.descricao }),
         p.modelos && p.modelos.length ? el('div', { class: 'mods' }, 'Modelos: ', ...p.modelos.flatMap((id, i) => {
@@ -2173,8 +2580,7 @@ function ligarEventos() {
   $('#home-search').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       buscar.flush();
-      const ts = termos(state.buscaInicio);
-      const primeiro = ts.length && LIB.modelos.find((m) => ts.every((t) => m._busca.includes(t)));
+      const primeiro = state.buscaInicio.trim() && ranquear(modelosDoTema(), state.buscaInicio)[0];
       if (primeiro) usarModelo(primeiro.id);
     } else if (e.key === 'Escape') {
       e.target.value = '';
@@ -2199,7 +2605,7 @@ function ligarEventos() {
       const sel = getSelection();
       const bloco = sel.rangeCount ? closestBloco(sel.anchorNode) : null;
       if (bloco && !bloco.textContent.trim()) {
-        for (const a of ['grupo', 'opcao', 'se', 'opcional', 'incluido', 'etiqueta', 'bloco']) delete bloco.dataset[a];
+        for (const a of ['grupo', 'opcao', 'se', 'opcional', 'incluido', 'etiqueta', 'bloco', 'origem']) delete bloco.dataset[a];
         bloco.classList.remove('rotulo', 'flash', 'oculto', 'opt-pend');
         bloco.removeAttribute('title');
       }
@@ -2219,6 +2625,9 @@ function ligarEventos() {
   ed.addEventListener('click', (e) => {
     const chip = e.target.closest('.campo');
     if (chip && e.detail === 1) focarNoPainel(chip);
+    // clique num [texto a redigir]: seleciona o marcador inteiro para digitar por cima
+    const ph = !chip && e.detail === 1 && getSelection().isCollapsed && e.target.closest('.ph');
+    if (ph && ph.firstChild) selecionarMarcador([ph.firstChild, 0], [ph.firstChild, ph.firstChild.data.length]);
   });
   ed.addEventListener('dblclick', (e) => {
     const chip = e.target.closest('.campo');
@@ -2239,6 +2648,9 @@ function ligarEventos() {
   $('#doc-title').addEventListener('input', () => { if (state.parecer) { state.parecer.titulo = $('#doc-title').value; marcarAlterado(); } });
   $('#btn-copy').addEventListener('click', () => exportar('copiar'));
   $('#btn-preview').addEventListener('click', preVisualizar);
+  $('#btn-prox').addEventListener('mousedown', (e) => e.preventDefault());
+  $('#btn-prox').addEventListener('click', irParaProxima);
+  $('#btn-pend-lista').addEventListener('click', mostrarPendencias);
   ligarMenu($('#btn-export'), $('#menu-export'));
   ligarMenu($('#btn-more'), $('#menu-more'));
   $('#btn-save').addEventListener('click', () => { $('#menu-more').hidden = true; salvarParecer(); });
@@ -2261,6 +2673,10 @@ function ligarEventos() {
     oferecerDesfazer(snap, 'Texto do modelo restaurado.');
   });
   $('#btn-code').addEventListener('click', () => { $('#menu-more').hidden = true; gerarCodigoModelo(); });
+
+  // primeiros passos (Início)
+  $('#home-passos').hidden = Store.ui('passosOk') === true;
+  $('#btn-passos-ok').addEventListener('click', () => { Store.ui('passosOk', true); $('#home-passos').hidden = true; });
 
   // meus pareceres
   $('#par-search').addEventListener('input', debounce(renderPareceres, 150));
@@ -2287,6 +2703,7 @@ function ligarEventos() {
       return;
     }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && state.parecer) { e.preventDefault(); salvarParecer(); return; }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && state.parecer && state.view === 'editor' && !$('#dialog').open) { e.preventDefault(); irParaProxima(); return; }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p' && state.parecer && state.view === 'editor') { e.preventDefault(); exportar('pdf'); }
   });
 
