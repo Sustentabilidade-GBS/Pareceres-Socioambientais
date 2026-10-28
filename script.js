@@ -819,18 +819,33 @@ function renderTemas() {
   const botao = (id, nome, n, titulo) => {
     const on = state.temaInicio === id;
     return el('button', { type: 'button', class: 'tema' + (on ? ' on' : ''), 'aria-pressed': String(on), title: titulo || null,
-      onclick: () => { state.temaInicio = on && id ? '' : id; renderInicio(); } }, nome, el('span', { class: 'count', text: ' ' + n }));
+      onclick: () => { state.temaInicio = on && id ? '' : id; for (const k in catsAbertas) delete catsAbertas[k]; renderInicio(); } }, nome, el('span', { class: 'count', text: ' ' + n }));
   };
   nav.replaceChildren(el('span', { class: 'temas-label', text: 'Tema do chamado:' }),
     botao('', 'Todos', LIB.modelos.length),
     ...TEMAS_LIB.map((t) => botao(t.id, t.curto || t.nome, LIB.modelos.filter((m) => m._temas.includes(t.id)).length, t.nome)));
 }
 
+/** Seções recolhíveis: só "Mais usados" (ou tudo, com um tema escolhido) abre por padrão. */
+const catsAbertas = {};
+
 function secaoModelos(titulo, desc, lista, ts, extra) {
-  return el('section', { class: 'cat' + (extra ? ' ' + extra : '') },
-    el('h2', { class: 'cat-title' }, titulo, el('span', { class: 'count', text: ' ' + lista.length })),
+  const aberta = () => (titulo in catsAbertas ? catsAbertas[titulo] : !!extra);
+  const sec = el('section', { class: 'cat' + (extra ? ' ' + extra : '') });
+  const btn = el('button', { type: 'button', class: 'cat-toggle' });
+  const corpo = el('div', { class: 'cat-body' },
     desc ? el('p', { class: 'cat-desc', text: desc }) : null,
     el('div', { class: 'model-grid' }, lista.map((m) => cartaoModelo(m, ts))));
+  const aplicar = () => {
+    const on = aberta();
+    btn.setAttribute('aria-expanded', String(on));
+    btn.replaceChildren(el('span', { class: 'cat-caret', text: on ? '▾' : '▸' }), ' ' + titulo, el('span', { class: 'count', text: ' ' + lista.length }));
+    corpo.hidden = !on;
+  };
+  btn.addEventListener('click', () => { catsAbertas[titulo] = !aberta(); aplicar(); });
+  aplicar();
+  sec.append(el('h2', { class: 'cat-title' }, btn), corpo);
+  return sec;
 }
 
 /** Sem resultado: oferece começar sem modelo ou procurar em todos os temas. */
